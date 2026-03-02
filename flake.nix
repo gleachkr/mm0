@@ -39,7 +39,13 @@
           '';
         };
 
-        defaultPackage = packages.mm0-rs;
+        defaultPackage = pkgs.symlinkJoin {
+          name = "mm0";
+          paths = [
+            packages.mm0-rs
+            packages.mm0-c
+          ];
+        };
 
         # `nix run`
         apps.mm0-rs = packages.mm0-rs;

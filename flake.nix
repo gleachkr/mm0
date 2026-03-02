@@ -29,6 +29,16 @@
           singleStep = true;
         };
 
+        packages.mm0-c = pkgs.stdenv.mkDerivation {
+          name = "mm0-c";
+          src = ./mm0-c;
+          buildPhase = ''gcc main.c -o mm0-c'';
+          installPhase = ''
+            mkdir -p $out/bin
+            install -m 755 mm0-c $out/bin
+          '';
+        };
+
         defaultPackage = packages.mm0-rs;
 
         # `nix run`

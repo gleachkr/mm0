@@ -31,12 +31,20 @@
 
         packages.mm0-c = pkgs.stdenv.mkDerivation {
           name = "mm0-c";
-          src = ./mm0-c;
-          buildPhase = ''gcc main.c -o mm0-c'';
+          src = ./.;
+          buildPhase = ''
+          cd examples
+          mm0-rs compile peano.mm1 peano.mmb
+          cd ../mm0-c
+          ./make.sh
+          '';
           installPhase = ''
             mkdir -p $out/bin
             install -m 755 mm0-c $out/bin
           '';
+          buildInputs = [
+            self.packages.${system}.mm0-rs
+          ];
         };
 
         defaultPackage = pkgs.symlinkJoin {

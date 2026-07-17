@@ -197,8 +197,14 @@ pub enum StmtCmd {
   /// sequence, that should unify with the unify sequence in the header.
   Axiom,
   /// A new term or def. Equivalent to `term/def foo ...`.
-  /// If `local` is true, then this is `local def foo`. This is followed by
-  /// no data, as the header contains the unify sequence and can be checked on its own.
+  /// If `local` is true, then this is `local def foo`.
+  ///
+  /// A `term` is followed by no data, as the header contains the unify sequence
+  /// and can be checked on its own. A `def` (whether or not `local`) is followed
+  /// by a proof sequence constructing the value of the definition on the stack;
+  /// this is redundant with the unify sequence in the header, but checking one
+  /// against the other rules out cyclic terms. Use [`TermRef::def`] to tell the
+  /// two apart — `local` does *not* distinguish them.
   TermDef {
     /// Is this `local def`?
     local: bool,
@@ -235,8 +241,14 @@ pub enum NumdStmtCmd {
     thm_id: ThmId,
   },
   /// A new term or def. Equivalent to `term/def foo ...`.
-  /// If `local` is true, then this is `local def foo`. This is followed by
-  /// no data, as the header contains the unify sequence and can be checked on its own.
+  /// If `local` is true, then this is `local def foo`.
+  ///
+  /// A `term` is followed by no data, as the header contains the unify sequence
+  /// and can be checked on its own. A `def` (whether or not `local`) is followed
+  /// by a proof sequence constructing the value of the definition on the stack;
+  /// this is redundant with the unify sequence in the header, but checking one
+  /// against the other rules out cyclic terms. Use [`TermRef::def`] to tell the
+  /// two apart — `local` does *not* distinguish them.
   TermDef {
     /// The term ID, the index into the term/def table
     term_id: TermId,

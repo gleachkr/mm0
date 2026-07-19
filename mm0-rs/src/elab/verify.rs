@@ -5,7 +5,7 @@ use std::{collections::HashMap, fmt::Write, cell::Cell};
 use mm0_util::{AtomId, Modifiers, SortId, TermId, ThmId, LinedString};
 use mm0b_parser::MAX_BOUND_VARS;
 
-use crate::{DeclKey, Environment, ExprNode, FormatEnv, LispVal, ProofNode, Term, TermKind, Thm, ThmKind, Type};
+use crate::{DeclKey, Environment, ExprNode, FormatEnv, LispVal, ProofNode, Sort, Term, TermKind, Thm, ThmKind, Type};
 use super::proof::Subst;
 
 /// If true, environment additions will be verified before going in the environmenst.
@@ -62,6 +62,12 @@ pub enum VerifyError<'a> {
   DepsOutOfBounds,
   /// Maximum number of bound variables exceeded
   MaxBoundVars,
+  /// A sort id that is not in the environment.
+  UnknownSort(SortId),
+  /// A term id that is not in the environment.
+  UnknownTerm(TermId),
+  /// A theorem id that is not in the environment.
+  UnknownThm(ThmId),
   /// Bound variable declared in a `strict` sort
   BoundInStrictSort,
   /// Dummy variable declared in a `free` sort
@@ -223,6 +229,9 @@ impl VerifyError<'_> {
         "A variable depends on a bound variable which has not yet been declared."),
       VerifyError::MaxBoundVars => write!(w,
         "Maximum number of bound variables exceeded (max {MAX_BOUND_VARS})"),
+      VerifyError::UnknownSort(s) => write!(w, "sort {} is not in the environment", s.0),
+      VerifyError::UnknownTerm(t) => write!(w, "term {} is not in the environment", t.0),
+      VerifyError::UnknownThm(t) => write!(w, "theorem {} is not in the environment", t.0),
       VerifyError::BoundInStrictSort => write!(w, "Bound variable declared in a `strict` sort"),
       VerifyError::DummyInFreeSort => write!(w, "Dummy variable declared in a `free` sort"),
       VerifyError::TermInPureSort => write!(w, "Term declared in a `pure` sort"),
@@ -355,13 +364,14 @@ fn load_args<'a, T>(
     match *ty {
       Type::Bound(s) => {
         bound.check_sort(s)?;
-        vassert!(!env.sorts[s].mods.contains(Modifiers::STRICT), VerifyError::BoundInStrictSort);
+        vassert!(!env.get_sort(s)?.mods.contains(Modifiers::STRICT), VerifyError::BoundInStrictSort);
         vassert!(bvars < 1 << MAX_BOUND_VARS, VerifyError::MaxBoundVars);
         heap.push((s, true, bvars));
         bvars <<= 1;
       },
       Type::Reg(s, deps) => {
         bound.check_sort(s)?;
+        env.get_sort(s)?;
         vassert!(deps < bvars, VerifyError::DepsOutOfBounds);
         heap.push((s, false, deps));
       }
@@ -371,6 +381,16 @@ fn load_args<'a, T>(
 }
 
 impl Environment {
+  fn get_sort<'a>(&self, s: SortId) -> Result<&Sort, VerifyError<'a>> {
+    self.sorts.get(s).ok_or(VerifyError::UnknownSort(s))
+  }
+  fn get_term<'a>(&self, t: TermId) -> Result<&Term, VerifyError<'a>> {
+    self.terms.get(t).ok_or(VerifyError::UnknownTerm(t))
+  }
+  fn get_thm<'a>(&self, t: ThmId) -> Result<&Thm, VerifyError<'a>> {
+    self.thms.get(t).ok_or(VerifyError::UnknownThm(t))
+  }
+
   fn verify_expr_node<'a>(
     &self,
     bound: &Bound,
@@ -384,8 +404,9 @@ impl Environment {
       ExprNode::Ref(i) => heap[i],
       ExprNode::Dummy(a, s) => if let Some((dummies, bvars)) = dummies {
         bound.check_sort(s)?;
-        vassert!(!self.sorts[s].mods.contains(Modifiers::STRICT), VerifyError::BoundInStrictSort);
-        vassert!(!self.sorts[s].mods.contains(Modifiers::FREE), VerifyError::DummyInFreeSort);
+        let mods = self.get_sort(s)?.mods;
+        vassert!(!mods.contains(Modifiers::STRICT), VerifyError::BoundInStrictSort);
+        vassert!(!mods.contains(Modifiers::FREE), VerifyError::DummyInFreeSort);
         vassert!(dummies.insert(a, s).is_none(), VerifyError::DummyDeclaredTwice(a));
         let deps = *bvars;
         vassert!(deps < 1 << MAX_BOUND_VARS, VerifyError::MaxBoundVars);
@@ -395,8 +416,8 @@ impl Environment {
         return Err(VerifyError::InvalidDummy)
       }
       ExprNode::App(t, p) => {
-        let td = &self.terms[t];
         bound.check_term(t)?;
+        let td = self.get_term(t)?;
         vassert!(p + td.args.len() <= store.len(), VerifyError::MalformedStore);
         let mut deps = vec![];
         let mut accum = 0;
@@ -551,7 +572,7 @@ impl<'a> VerifyProof<'a, '_> {
       ProofNode::Ref(i) => self.heap.get(i).copied().ok_or(VerifyError::MalformedHeap)?,
       ProofNode::Dummy(a, s) => {
         self.bound.check_sort(s)?;
-        let mods = self.env.sorts[s].mods;
+        let mods = self.env.get_sort(s)?.mods;
         vassert!(!mods.contains(Modifiers::STRICT), VerifyError::BoundInStrictSort);
         vassert!(!mods.contains(Modifiers::FREE), VerifyError::DummyInFreeSort);
         vassert!(self.dummies.insert(a, s).is_none(), VerifyError::DummyDeclaredTwice(a));
@@ -563,7 +584,7 @@ impl<'a> VerifyProof<'a, '_> {
       }
       ProofNode::Term(term, p) => {
         self.bound.check_term(term)?;
-        let td = &self.env.terms[term];
+        let td = self.env.get_term(term)?;
         vassert!(p + td.args.len() <= self.ctx.store.len(), VerifyError::MalformedStore);
         let args = td.unpack_term(&self.ctx.store[p..]);
         let mut accum = 0;
@@ -594,7 +615,7 @@ impl<'a> VerifyProof<'a, '_> {
       }
       ProofNode::Thm(thm, p) => {
         self.bound.check_thm(thm)?;
-        let td = &self.env.thms[thm];
+        let td = self.env.get_thm(thm)?;
         vassert!(p + td.args.len() + td.hyps.len() < self.ctx.store.len(),
           VerifyError::MalformedStore);
         let (res, args, subproofs) = td.unpack_thm(&self.ctx.store[p..]);
@@ -679,7 +700,7 @@ impl<'a> VerifyProof<'a, '_> {
         self.verify_conv_node(node, &self.ctx.store[p], rhs, lhs)?
       }
       ProofNode::Cong(term, p) => {
-        let td = &self.env.terms[term];
+        let td = self.env.get_term(term)?;
         vassert!(p + td.args.len() <= self.ctx.store.len(), VerifyError::MalformedStore);
         let args = td.unpack_term(&self.ctx.store[p..]);
         match (lhs, rhs) {
@@ -697,7 +718,7 @@ impl<'a> VerifyProof<'a, '_> {
       }
       ProofNode::Unfold(term, p) => match *lhs {
         ProofNode::Term(t1, p1) if term == t1 => {
-          let td = &self.env.terms[term];
+          let td = self.env.get_term(term)?;
           vassert!(p + td.args.len() + 2 <= self.ctx.store.len(), VerifyError::MalformedStore);
           let (sub_lhs, c, args) = td.unpack_unfold(&self.ctx.store[p..]);
           let lhss = td.unpack_term(&self.ctx.store[p1..]);
@@ -739,7 +760,7 @@ impl Environment {
     let (bvars, mut e_heap) = load_args(self, bound, &td.args)?;
     bound.check_sort(td.ret.0)?;
     vassert!(td.ret.1 < bvars, VerifyError::DepsOutOfBounds);
-    vassert!(!self.sorts[td.ret.0].mods.contains(Modifiers::PURE), VerifyError::TermInPureSort);
+    vassert!(!self.get_sort(td.ret.0)?.mods.contains(Modifiers::PURE), VerifyError::TermInPureSort);
     match &td.kind {
       TermKind::Term => Ok(()),
       TermKind::Def(None) => Err(VerifyError::UsesSorry),
@@ -777,10 +798,12 @@ impl Environment {
     }
     for (_, hyp) in &*td.hyps {
       let (s, _, _) = self.verify_expr_node(bound, &td.heap, &td.store, &e_heap, &mut None, hyp)?;
-      vassert!(self.sorts[s].mods.contains(Modifiers::PROVABLE), VerifyError::HypNotInProvableSort);
+      vassert!(self.get_sort(s)?.mods.contains(Modifiers::PROVABLE),
+        VerifyError::HypNotInProvableSort);
     }
     let (s, _, _) = self.verify_expr_node(bound, &td.heap, &td.store, &e_heap, &mut None, &td.ret)?;
-    vassert!(self.sorts[s].mods.contains(Modifiers::PROVABLE), VerifyError::HypNotInProvableSort);
+    vassert!(self.get_sort(s)?.mods.contains(Modifiers::PROVABLE),
+      VerifyError::HypNotInProvableSort);
     match &td.kind {
       ThmKind::Axiom => Ok(()),
       ThmKind::Thm(None) => Err(VerifyError::UsesSorry),

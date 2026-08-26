@@ -1,4 +1,5 @@
 import "../../examples/assembler-new.mm1";
+import "spec_lib.mm1";
 
 --| Spec test suite: each test proves a *positive* instance of `step`, exhibiting a
 --| successor state and pinning the observables the runtime harness reads back --
@@ -7,23 +8,9 @@ import "../../examples/assembler-new.mm1";
 --| Positive instances matter: the `pushAux` bug survived because every theorem about
 --| it was of the form `X -> well-typed`, which holds vacuously of an unsatisfiable
 --| definition. `E. k2 (step k k2 /\ ...)` cannot.
-
-----------------------------------------
--- Shared machinery
-----------------------------------------
-
---| Positive introduction for `step`. `hn` supplies the instruction length separately
---| so that callers work with a literal rather than an unreduced `len l`.
-theorem stepI (k k2 l n ast: nat)
-  (hn: $ len l = n $)
-  (h1: $ k e. Config $)
-  (h2: $ readException k = 0 $)
-  (h3: $ readMemX k (readRIP k) l $)
-  (h4: $ decode ast l $)
-  (h5: $ execXAST (writeRIP k (readRIP k +_64 n)) ast k2 $):
-  $ step k k2 $ =
-'(iani (iani h1 h2) @ iexie @ iexde @ mpbiri (iani (iani h3 h4) @
-  mpbi (execXASTeq1 @ writeRIPeq2 @ add64eq2 @ eqcom hn) h5) ,eqtac);
+--|
+--| `stepI` and the `d2pow*` power-of-two lemmas are shared with the OS-layer suite
+--| via `spec_lib.mm1`.
 
 --| `len` of a one byte instruction, from the assembler's generated `strlen` family.
 theorem len_s1 (c: char): $ len (s1 c) = 1 $ = '(eqtr strlen1 h2n1);
@@ -145,20 +132,8 @@ theorem el_instSimple: $ p, s, x e. instSimple ast <-> decode ast s $ =
 '(!! elsabe pv @ a1i @ !! elsabe sv @
   bitrd (a1i @ !! elabe xv @ a1i biid) @ decodeeq2d id);
 
---| Strip `parseInst`'s assembly-position wrapper down to a bare `decode`.
---| `parseInstN p ip s I` is
---| `text_start + p + ip e. u64 -> A. x (ip = x + len s -> p, s, x e. I)`,
---| so a test discharges the address-range side condition once and instantiates
---| the position; everything after that is ordinary decoding.
-theorem parseInst_mem (p ip x: nat) (s: string) (I: set)
-  (h1: $ text_start + p + ip e. u64 $)
-  (h2: $ ip = x + len s $)
-  (h:  $ parseInst p ip s I $):
-  $ p, s, x e. I $ =
-(focus
-  (have 'hall $ A. xv (ip = xv + len s -> p, s, xv e. I) $ '(ax_mp h h1))
-  '(ax_mp (ax_mp (!! eale xv @ imeqd (eqeq2d @ addeq1d id) @
-      eleq1d @ preq2d @ preq2d id) hall) h2));
+-- `parseInst_mem` (strip `parseInst`'s position wrapper to `p, s, x e. I`) is
+-- shared with the OS-layer suite, in spec_lib.mm1.
 
 theorem parseInst_decode (p ip x ast: nat) (s: string)
   (h1: $ text_start + p + ip e. u64 $)
@@ -312,15 +287,8 @@ theorem readRIP_unop (K w: nat) (c z s o: wff):
 theorem d1elBits64: $ 1 e. Bits 64 $ =
 '(mpbi (elneq h2n1 eqid) ,(verb @ to-elu 64 '(h2n @ ,(hexdigit 1))));
 
---| `upto 64` written out, so that a test can state the value the runtime harness
---| actually loads rather than a symbolic all-ones. Follows `peano_hex.mm1`'s
---| `upto16`, doubling the exponent twice to reach 64.
-theorem d2pow32x: $ 2 ^ 32 = ,0x100000000 $ =
-'(eqtr3 (poweq2 {,norm_num : $ 16 + 16 = 32 $}) @ eqtr powadd @
-  eqtr (muleq d2pow16x d2pow16x) ,norm_num);
-theorem d2pow64x: $ 2 ^ 64 = ,0x10000000000000000 $ =
-'(eqtr3 (poweq2 {,norm_num : $ 32 + 32 = 64 $}) @ eqtr powadd @
-  eqtr (muleq d2pow32x d2pow32x) ,norm_num);
+-- `d2pow32x` / `d2pow64x` (`2 ^ n` written out as a hex literal) are shared with
+-- the OS-layer suite, in spec_lib.mm1.
 theorem upto64hex: $ upto 64 = ,0xffffffffffffffff $ =
 '(mpbi peano2 @ eqtr sucupto @ eqtr4 d2pow64x ,norm_num);
 
@@ -355,13 +323,8 @@ theorem notMSB64_1: $ ~ MSB wSz64 1 $ =
 --| `-1 + 1` wraps to zero: `upto 64 + 1` is exactly `2 ^ 64`, and `chop` is `%`.
 theorem add64_upto1: $ upto 64 +_64 1 = 0 $ = '(eqtr (chopeq2 uptoadd1) modid);
 
---| `neg` of one is all-ones, which is what makes `0 - 1` wrap.
-theorem bitsNeg64_1: $ bitsNeg 64 1 = upto 64 $ =
-'(eqtr (bitsAddeq2 @ bitsNot_sub d1elBits64) @
-  eqtr (chopeq2 @ npcan d1leupto64) @ Bits_chop uptoT);
-
 theorem sub64_01: $ 0 -_64 1 = upto 64 $ =
-'(eqtr (bitsAddeq3 bitsNeg64_1) @ eqtr bitsAdd02 @ Bits_chop uptoT);
+'(eqtr (bitsAddeq3 bitsNeg1) @ eqtr bitsAdd02 @ Bits_chop uptoT);
 
 --| `neg` of all ones is `1`.
 theorem bitsNeg_upto (k: nat) (h: $ 1 e. Bits k $): $ bitsNeg k (upto k) = 1 $ =
@@ -372,8 +335,6 @@ theorem bitsNot64_upto: $ bitsNot (wsizeBits wSz64) (upto 64) = 0 $ =
 '(eqtr (bitsNoteq1 wSz64Bits) @ eqtr (bitsNot_sub uptoT) subid);
 
 --| `chop` at `wSz64` is the identity on `Bits 64`; the two cases the tests need.
-theorem chop64_0: $ chop (wsizeBits wSz64) 0 = 0 $ =
-'(eqtr (chopeq1 wSz64Bits) @ Bits_chop elBits01);
 theorem chop64_upto_ne0: $ chop (wsizeBits wSz64) (upto 64) != 0 $ =
 '(mpbir (neeq1 @ eqtr (chopeq1 wSz64Bits) @ Bits_chop uptoT) upto64ne0);
 theorem chop64_1_ne0: $ chop (wsizeBits wSz64) 1 != 0 $ =
@@ -429,7 +390,7 @@ pub theorem test_inc_rax_minus1 {k2: nat} (k rip: nat)
       (eqtr readRIP_unop @ eqtr read_writeRIP @ add64eq1 hrip))
       (eqtr read_setReg @ eqcom h2n0))
       (bitr (bitr (CFeq readFlags_unop) CF_setCZSO) (CFeq readFlags_writeRIP)))
-      (mpbir (bitr (ZFeq readFlags_unop) ZF_setCZSO) chop64_0))
+      (mpbir (bitr (ZFeq readFlags_unop) ZF_setCZSO) chop02))
       (mt (bi1 @ bitr (SFeq readFlags_unop) SF_setCZSO) notMSB64_0))
       (mt (bi1 @ bitr (OFeq readFlags_unop) OF_setCZSO) true0)) ,eqtac));
 
@@ -498,7 +459,7 @@ theorem exec_not_rax (K: nat) (hK: $ K e. Config $)
 '(exec_unop_rax hK ha @ mpbir writeUnopNot @
   mpbir (writeEAeq4 bitsNot64_upto) @ iani elBits01 @
   mpbir (writeEASz_r @ iani (iani (iani hK wSz64T) RAX_T) chopT) @
-  eqcom @ eqtr writeReg64 @ setRegeq3 chop64_0);
+  eqcom @ eqtr writeReg64 @ setRegeq3 chop02);
 
 --| `not rax` with `rax = -1`: the result is zero and *no* flag moves.
 pub theorem test_not_rax_minus1 {k2: nat} (k rip: nat)
@@ -576,18 +537,8 @@ pub theorem test_neg_rax_minus1 {k2: nat} (k rip: nat)
 -- The 64 bit binops: 48 <opc> C1, dest = rax, src = rcx
 ----------------------------------------
 
---| `stepI` in deduction form. The binop path hands back an existential over the
---| `DestSrc`, so everything downstream of it is a deduction over that variable.
-theorem stepId (k k2 l n ast: nat) (G: wff)
-  (hn: $ len l = n $)
-  (h1: $ k e. Config $) (h2: $ readException k = 0 $)
-  (h3: $ readMemX k (readRIP k) l $)
-  (h4: $ G -> decode ast l $)
-  (h5: $ G -> execXAST (writeRIP k (readRIP k +_64 n)) ast k2 $):
-  $ G -> step k k2 $ =
-'(iand (a1i @ iani h1 h2) @ iexde @ iexde @ mpbird ,eqtac @
-  iand (iand (a1i h3) (anwl @ anwl h4)) @ anwl @ anwl @
-  mpbid (a1i @ execXASTeq1 @ writeRIPeq2 @ add64eq2 @ eqcom hn) h5);
+-- `stepId` (the deduction form of `stepI`) is shared with the OS-layer suite,
+-- in spec_lib.mm1.
 
 --| Membership in `instBinop`. Unlike `instUnop` this carries an existential over
 --| the `DestSrc`, and `opc < 8` as an antecedent rather than a conjunct.
@@ -618,11 +569,8 @@ theorem mkRegRMI_srcEA_rcx (K ds: nat):
 '(syl6eq (eqtr immRM_EArm @ eqtr RM_EAreg @ EA_req h2n1) @ immRM_EAeq2d @
   sylib peano2 @ syl eqcom anr);
 
---| The operand read at any register, generalising `readEA_rax`.
-theorem readEA_reg (K r a: nat) (hK: $ K e. Config $) (hr: $ r e. Regs $)
-  (ha: $ readReg K r = a $): $ readEA K wSz64 (EA_r r) a $ =
-'(mpbir (readEA_r @ iani (iani hK hr) wSz64T) @
-  eqcom @ eqtr (readRegSz64 @ iani hK hr) ha);
+-- `readEA_reg` (operand read at any register) is shared with the OS-layer suite,
+-- in spec_lib.mm1.
 
 --| The step, for any binop with `rax` as destination and `rcx` as source.
 theorem exec_binop_rr (K op ds a b k2: nat)
@@ -750,7 +698,7 @@ pub theorem test_add_rax_rcx {k2: nat} (k rip: nat)
       (eqtr readRIP_unop @ eqtr read_writeRIP @ add64eq1 hrip))
       (eqtr read_setReg @ eqcom h2n0))
       (mpbir (bitr (CFeq readFlags_unop) CF_setCZSO) true1))
-      (mpbir (bitr (ZFeq readFlags_unop) ZF_setCZSO) chop64_0))
+      (mpbir (bitr (ZFeq readFlags_unop) ZF_setCZSO) chop02))
       (mt (bi1 @ bitr (SFeq readFlags_unop) SF_setCZSO) notMSB64_0))
       (mt (bi1 @ bitr (OFeq readFlags_unop) OF_setCZSO) true0)) ,eqtac));
 
@@ -821,7 +769,7 @@ pub theorem test_and_rax_rcx {k2: nat} (k rip: nat)
       (eqtr readRIP_unop @ eqtr read_writeRIP @ add64eq1 hrip))
       (eqtr read_setReg @ eqcom h2n0))
       (mt (bi1 @ bitr (CFeq readFlags_unop) CF_setCZSO) notfal))
-      (mpbir (bitr (ZFeq readFlags_unop) ZF_setCZSO) chop64_0))
+      (mpbir (bitr (ZFeq readFlags_unop) ZF_setCZSO) chop02))
       (mt (bi1 @ bitr (SFeq readFlags_unop) SF_setCZSO) notMSB64_0))
       (mt (bi1 @ bitr (OFeq readFlags_unop) OF_setCZSO) notfal)) ,eqtac));
 
@@ -1353,9 +1301,8 @@ theorem parseModRM2_sib0_B
 theorem len_s8 (a b c d e f g h: char):
   $ len (a ': b ': c ': d ': e ': f ': g ': s1 h) = 8 $ = '(eqtr strlen8 h2n8);
 
-theorem text_start_8: $ text_start + 0 + 8 e. u64 $ =
-'(mpbir (elneq (eqtr (addeq1 add0)
-    {,norm_num : $ ,0x400078 + 8 = ,0x400080 $}) eqid) load_start_T);
+-- `text_start_8` (the load address of an 8-byte instruction at offset 0) is
+-- shared with the OS-layer suite, in spec_lib.mm1.
 
 --| The displacement, little endian, as `parseIBytesPos` builds it.
 theorem parseImm32S_12345678:

@@ -1,0 +1,7 @@
+-- Contract for spec_lib.mm1. Its shared lemmas (d2pow*, stepI/stepId, readEA_reg,
+-- text_start_8, parseInst_mem) are all local (non-pub), so this file only
+-- re-exports the model + assembler public interface: it exists as a stable
+-- hand-written import target for the generated suite contracts (x86_tests.mm0,
+-- os/os_tests.mm0), so those do not depend on each other. `compiler.mm0` carries
+-- the assembler's `sorry` axiom and the x86 model declarations.
+import "../../examples/compiler.mm0";

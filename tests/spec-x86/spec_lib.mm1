@@ -1,0 +1,69 @@
+import "../../examples/assembler-new.mm1";
+
+-- Shared scaffolding for the spec test suites (instruction suite `x86_tests` and
+-- OS-layer suite `os/os_tests`). Hand-written so the *generated* `.mm0` contracts
+-- can import a stable hand-written `.mm0` (`spec_lib.mm0`) rather than depend on
+-- each other's generated files. Imports `assembler-new.mm1` (both suites use the
+-- assembler's parse lemmas, and thereby its `sorry` axiom -- declared in the
+-- corresponding `compiler.mm0`).
+
+--| Powers of two as hex literals: `norm_num` cannot evaluate `^`, so these bridge
+--| `2 ^ n` to the elaborated hex numeral via `powadd` + the smaller `d2pow*`.
+theorem d2pow12x: $ 2 ^ 12 = ,{2 ^ 12} $ =
+'(eqtr (poweq2 {,norm_num : $ 12 = 8 + 4 $}) @ eqtr powadd @ eqtr (muleq d2pow8x d2pow4) ,norm_num);
+theorem d2pow32x: $ 2 ^ 32 = ,{2 ^ 32} $ =
+'(eqtr3 (poweq2 {,norm_num : $ 16 + 16 = 32 $}) @ eqtr powadd @
+  eqtr (muleq d2pow16x d2pow16x) ,norm_num);
+theorem d2pow64x: $ 2 ^ 64 = ,{2 ^ 64} $ =
+'(eqtr3 (poweq2 {,norm_num : $ 32 + 32 = 64 $}) @ eqtr powadd @
+  eqtr (muleq d2pow32x d2pow32x) ,norm_num);
+
+--| Positive introduction for `step`. `hn` supplies the instruction length
+--| separately so that callers work with a literal rather than an unreduced
+--| `len l`.
+theorem stepI (k k2 l n ast: nat)
+  (hn: $ len l = n $)
+  (h1: $ k e. Config $)
+  (h2: $ readException k = 0 $)
+  (h3: $ readMemX k (readRIP k) l $)
+  (h4: $ decode ast l $)
+  (h5: $ execXAST (writeRIP k (readRIP k +_64 n)) ast k2 $):
+  $ step k k2 $ =
+'(iani (iani h1 h2) @ iexie @ iexde @ mpbiri (iani (iani h3 h4) @
+  mpbi (execXASTeq1 @ writeRIPeq2 @ add64eq2 @ eqcom hn) h5) ,eqtac);
+
+--| The deduction form of `stepI`: the decode and exec facts may depend on a
+--| hypothesis `G` (e.g. an existentially-introduced `DestSrc`).
+theorem stepId (k k2 l n ast: nat) (G: wff)
+  (hn: $ len l = n $)
+  (h1: $ k e. Config $) (h2: $ readException k = 0 $)
+  (h3: $ readMemX k (readRIP k) l $)
+  (h4: $ G -> decode ast l $)
+  (h5: $ G -> execXAST (writeRIP k (readRIP k +_64 n)) ast k2 $):
+  $ G -> step k k2 $ =
+'(iand (a1i @ iani h1 h2) @ iexde @ iexde @ mpbird ,eqtac @
+  iand (iand (a1i h3) (anwl @ anwl h4)) @ anwl @ anwl @
+  mpbid (a1i @ execXASTeq1 @ writeRIPeq2 @ add64eq2 @ eqcom hn) h5);
+
+--| An operand read at any register.
+theorem readEA_reg (K r a: nat) (hK: $ K e. Config $) (hr: $ r e. Regs $)
+  (ha: $ readReg K r = a $): $ readEA K wSz64 (EA_r r) a $ =
+'(mpbir (readEA_r @ iani (iani hK hr) wSz64T) @
+  eqcom @ eqtr (readRegSz64 @ iani hK hr) ha);
+
+--| The load address `text_start + 0 + 8` (an 8-byte instruction at offset 0).
+theorem text_start_8: $ text_start + 0 + 8 e. u64 $ =
+'(mpbir (elneq (eqtr (addeq1 add0)
+    {,norm_num : $ ,0x400078 + 8 = ,0x400080 $}) eqid) load_start_T);
+
+--| From an assembler `parseInst` fact and its positional obligations, the set
+--| membership `p, s, x e. I` that the `el_inst*` bridges consume.
+theorem parseInst_mem (p ip x: nat) (s: string) (I: set)
+  (h1: $ text_start + p + ip e. u64 $)
+  (h2: $ ip = x + len s $)
+  (h:  $ parseInst p ip s I $):
+  $ p, s, x e. I $ =
+(focus
+  (have 'hall $ A. xv (ip = xv + len s -> p, s, xv e. I) $ '(ax_mp h h1))
+  '(ax_mp (ax_mp (!! eale xv @ imeqd (eqeq2d @ addeq1d id) @
+      eleq1d @ preq2d @ preq2d id) hall) h2));

@@ -1,0 +1,1125 @@
+import "../spec_lib.mm1";
+
+-- The OS-layer spec test suite. Hand-written proofs of the statements in
+-- os_tests.mm0, which mm0-c checks the two against. Each `test_exit_N` says a
+-- syscall-pending state with `RAX = sys_exit`, `RDI = N` is a good exit
+-- reporting `N & 0xff` -- the observable a parent's `waitpid` sees.
+--
+-- Each proof takes the syscall disjunct of `execExit`: `ret e. u32` (the code is
+-- a byte), and `ret = chop 8 (readReg k RDI)` via `chopeq2 (eqcom hrdi)`. The
+-- code equals `chop 8 N`: for N < 256 that is N itself (`Bits_chop`); for the
+-- masking cases `chop 8` of a 3-hex-digit number is its low byte (`xchopshr8`
+-- then `hex01` to drop the leading zero).
+
+pub theorem test_exit_0 (k: nat)
+  (hk:   $ k e. Config $)
+  (hex:  $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,0x3c $)
+  (hrdi: $ readReg k RDI = ,0x0 $):
+  $ execExit k ,0x0 $ =
+'(iani (iani hk (ssel u8ss32 xelu8_1)) @ orr @ iani (iani hex (eqtr hrax @ eqcom c2nhex)) @
+  eqtr (eqcom @ Bits_chop xelu8_1) @ chopeq2 @ eqcom hrdi);
+
+pub theorem test_exit_1 (k: nat)
+  (hk:   $ k e. Config $)
+  (hex:  $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,0x3c $)
+  (hrdi: $ readReg k RDI = ,0x1 $):
+  $ execExit k ,0x1 $ =
+'(iani (iani hk (ssel u8ss32 xelu8_1)) @ orr @ iani (iani hex (eqtr hrax @ eqcom c2nhex)) @
+  eqtr (eqcom @ Bits_chop xelu8_1) @ chopeq2 @ eqcom hrdi);
+
+pub theorem test_exit_256 (k: nat)
+  (hk:   $ k e. Config $)
+  (hex:  $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,0x3c $)
+  (hrdi: $ readReg k RDI = ,0x100 $):
+  $ execExit k ,0x0 $ =
+'(iani (iani hk (ssel u8ss32 xelu8_1)) @ orr @ iani (iani hex (eqtr hrax @ eqcom c2nhex)) @
+  eqtr (eqcom @ eqtr (anr xchopshr8) hex01) @ chopeq2 @ eqcom hrdi);
+
+pub theorem test_exit_257 (k: nat)
+  (hk:   $ k e. Config $)
+  (hex:  $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,0x3c $)
+  (hrdi: $ readReg k RDI = ,0x101 $):
+  $ execExit k ,0x1 $ =
+'(iani (iani hk (ssel u8ss32 xelu8_1)) @ orr @ iani (iani hex (eqtr hrax @ eqcom c2nhex)) @
+  eqtr (eqcom @ eqtr (anr xchopshr8) hex01) @ chopeq2 @ eqcom hrdi);
+
+pub theorem test_exit_255 (k: nat)
+  (hk:   $ k e. Config $)
+  (hex:  $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,0x3c $)
+  (hrdi: $ readReg k RDI = ,0xff $):
+  $ execExit k ,0xff $ =
+'(iani (iani hk (ssel u8ss32 @ mpbir elu8 {,norm_num : $ ,0xff < 16 * 16 $})) @ orr @
+  iani (iani hex (eqtr hrax @ eqcom c2nhex)) @
+    eqtr (eqcom @ Bits_chop @ mpbir elu8 {,norm_num : $ ,0xff < 16 * 16 $}) @
+    chopeq2 @ eqcom hrdi);
+
+----------------------------------------------------------------------
+-- fault exits: a faulting instruction is a valid nonzero exit (hybrid of the
+-- decode/step tests and the exit tests).
+--
+-- Unlike `exit(N)`, a fault config is not given: the process must *decode and
+-- execute* a faulting instruction, which sets the exception. `ud2` (`0f 0b`)
+-- raises `#UD`, setting `exUD`; with no handler the process dies by `SIGILL`,
+-- which the parent sees as `WIFSIGNALED` with `$? = 128 + 4 = 132` -- never a
+-- clean exit 0. So the test is `E. k2 (step k k2 /\ execExit k2 ,0x84)`: one
+-- `step` decodes/executes `ud2` (via the shared `stepI`), and the resulting
+-- `#UD` config is a valid `execExit` with nonzero code 132. `execExit`'s fault
+-- branch requires only `ret != 0`; pinning `ret = 132` matches the shell's `$?`.
+--   decodeUD2   the two-byte opcode `0f 0b` decodes to `xastUD2`
+----------------------------------------------------------------------
+-- `len ,"\x0f\x0b" = 2` from the string-cons primitives (avoids the assembler's
+-- `strlen2`, so this stays in the assembler-free `x86.mm1` fragment).
+theorem lenUD2: $ len ,"\x0f\x0b" = 2 $ =
+'(eqtr (leneq s2nscons) @ eqtr lenS @ suceq @ eqtr (leneq s2ns1) len1);
+theorem decodeTwoUD2I: $ decodeTwoUD2 0 xastUD2 (ch x0 xb) 0 $ =
+'(iani (iani eqid eqid) eqid);
+theorem decodeUD2: $ decode xastUD2 ,"\x0f\x0b" $ =
+'(decode0I @ orr @ iani eqid @ iexie @ iexde @ mpbiri (iani s2ns1
+    (orl @ orr decodeTwoUD2I)) ,eqtac);
+
+pub theorem test_fault_ud {k2: nat} (k: nat)
+  (hk:  $ k e. Config $)
+  (hexc: $ readException k = 0 $)
+  (hc:  $ readMemX k (readRIP k) ,"\x0f\x0b" $):
+  $ E. k2 (step k k2 /\ execExit k2 ,0x84) $ =
+(focus
+  (have 'hstep $ step k (setException (writeRIP k (readRIP k +_64 2)) (suc exUD)) $
+    '(stepI lenUD2 hk hexc hc decodeUD2 @ mpbir execXASTUD2 eqid))
+  (have 'hexit $ execExit (setException (writeRIP k (readRIP k +_64 2)) (suc exUD)) ,0x84 $
+    '(iani (iani (setExceptionT @ iani (writeRIP_T @ iani hk add64T) (mpbir optS exUD_T))
+        (ssel u8ss32 @ mpbir elu8 {,norm_num : $ ,0x84 < 16 * 16 $})) @
+      orl @ iani (orr read_setException) {,norm_num : $ ,0x84 != 0 $}))
+  '(iexie @ mpbiri (iani hstep hexit) ,eqtac));
+
+
+----------------------------------------------------------------------
+-- fault exit: a memory-WRITE fault is a nonzero exit (segv / SIGSEGV).
+--
+-- Like `ud2`, but the fault comes from a memory ACCESS, not a dedicated
+-- instruction: `mov [0x7b], rax` (`48 89 04 25 7b 00 00 00`) writes 8 bytes to
+-- absolute address `0x7b`, which is unmapped/non-writable. The model's write
+-- faults (`writeMemory1`'s `~(PROT_WRITE C_ prot)` branch sets `exGPF`), so the
+-- step lands in a `#GP` config -- a valid nonzero `execExit`. On hardware the
+-- store hits the unmapped zero page and the process dies by `SIGSEGV`
+-- (`$? = 139`). The instruction is assembled through `assembler-new.mm1`'s
+-- `parseMovStore` (a `sorry`-axiomatized lemma -- testing it is deliberate) and
+-- the parse->decode bridge. The non-writable page comes in as the hypotheses
+-- `getMemory k @ ,0x7b = prot, b2` and `~(PROT_WRITE C_ prot)`; the harness runs
+-- the same bytes and confirms the SIGSEGV. Local scaffolding (shared in shape
+-- with the instruction suite's assembler helpers):
+--   parse* / el_instMov / parseInst_decode_mov   assembler -> model `decode`
+--   mkRMI2_*EA / write_gpf / exec_mov_store       the faulting `execXAST`
+--   stepId / text_start_8 / lenSEGV               the `step` wrapper
+----------------------------------------------------------------------
+
+theorem parseImm32S_7b:
+  $ parseImm32S (posZ ,0x7b) ,"\x7b\x00\x00\x00" s0 $ =
+'(parseImm32S_0 @ parseImmN_pos @ parseIBytesPosS2 @ parseIBytesPosS1 @
+  parseIBytesPosS1 @ parseIBytesPos01);
+theorem parseModRM2_sib_7b:
+  $ parseModRM2 (suc x8) (IRM_mem 0 0 (posZ ,0x7b)) 4 0 ,"\x25\x7b\x00\x00\x00" s0 $ =
+'(parseModRM2_sib0 xsplitBits_531 xsplitBits_222 (REX_X_Si xbit81)
+  xsplitBits_4121 parseSI_4 (REX_B_Si xbit80) xsplitBits_531 parseImm32S_7b);
+theorem parseModRM_04_7b:
+  $ parseModRM (suc x8) x0 (IRM_mem 0 0 (posZ ,0x7b)) ,"\x04\x25\x7b\x00\x00\x00" s0 $ =
+'(parseModRM_I xsplitBits_431 xsplitBits_022 (REX_R_Si xbit82) xsplitBits_0121
+  parseModRM2_sib_7b consStrS);
+theorem parseOpc_mov_7b:
+  $ parseOpc p ip ,"\x04\x25\x7b\x00\x00\x00" (suc x8) (ch x8 x9)
+      (instMov wSz64 (IRM_mem 0 0 (posZ ,0x7b)) (IRM_reg x0)) $ =
+'(parseMovStore xsplitBits_913 parseModRM_04_7b (opSizeW_S xbit83 opSize_64));
+theorem parseInst_mov_7b:
+  $ parseInst p ip ,"\x48\x89\x04\x25\x7b\x00\x00\x00"
+      (instMov wSz64 (IRM_mem 0 0 (posZ ,0x7b)) (IRM_reg x0)) $ =
+'(parseInst11 parseOpc_mov_7b);
+theorem el_instMov {ds: nat}:
+  $ p, s, x e. instMov sz dst src <->
+    E. ds (mkRMI2 dst src ds /\ decode (xastMov sz ds) s) $ =
+'(!! elsabe pv @ a1i @ !! elsabe sv @
+  bitrd (a1i @ !! elabe xv @ a1i biid) @ exeqd @ aneq2d @ decodeeq2d id);
+theorem parseInst_decode_mov {ds: nat} (p ip x sz dst src: nat) (s: string)
+  (h1: $ text_start + p + ip e. u64 $) (h2: $ ip = x + len s $)
+  (h:  $ parseInst p ip s (instMov sz dst src) $):
+  $ E. ds (mkRMI2 dst src ds /\ decode (xastMov sz ds) s) $ =
+'(mpbi el_instMov @ parseInst_mem h1 h2 h);
+
+theorem IRM_mem_7b: $ IRM_mem 0 0 (posZ ,0x7b) = suc (immRM_rm (RM_mem 0 0 ,0x7b)) $ =
+'(eqtr (obindeq1 @ asI64_posZ ,(to-elBits 63 (->hex 0x7b))) @
+  eqtr obindS @ applame ,eqtac);
+theorem IRM_reg_val: $ IRM_reg r = suc (immRM_rm (RM_reg r)) $ = 'eqid;
+
+theorem mkRMI2_destEA_7b (K ds: nat):
+  $ mkRMI2 (IRM_mem 0 0 (posZ ,0x7b)) (IRM_reg x0) ds -> destEA K ds = EA_m ,0x7b $ =
+'(eqtrd
+  (RM_EAeq2d @ eqcomd @ syl (bi1 b0can) @ syl (bi1 peano2) @ eqtr3d (a1i IRM_mem_7b) anlr) @
+  a1i @ eqtr RM_EAmem @ EA_meq @
+    eqtr (add64eq1 @ eqtr (add64eq readIndex0 readBase0) @ eqtr bitsAdd02 @ Bits_chop elBits01) @
+    eqtr bitsAdd02 @ Bits_chop ,(to-elBits 64 (->hex 0x7b)));
+
+theorem mkRMI2_srcEA_rax (K ds: nat):
+  $ mkRMI2 (IRM_mem 0 0 (posZ ,0x7b)) (IRM_reg x0) ds -> srcEA K ds = EA_r RAX $ =
+'(eqtrd
+  (immRM_EAeq2d @ eqcomd @ syl (bi1 peano2) @ eqtr3d (a1i IRM_reg_val) anr) @
+  a1i @ eqtr immRM_EArm @ eqtr RM_EAreg @ EA_req h2n0);
+
+theorem write_gpf (K v prot b2: nat)
+  (hK: $ K e. Config $) (hexc: $ readException K = 0 $) (hv: $ v e. u64 $)
+  (hpage: $ getMemory K @ ,0x7b = prot, b2 $) (hnw: $ ~(PROT_WRITE C_ prot) $):
+  $ writeEA K wSz64 (EA_m ,0x7b) v (setException K (suc exGPF)) $ =
+(focus
+  (have 'hu64 $ ,0x7b e. u64 $ ,(to-elBits 64 (->hex 0x7b)))
+  (have 'hfst $ fst (getMemory K @ ,0x7b) = prot $ '(eqtr (fsteq hpage) fstpr))
+  (have 'hnotp $ ~(PROT_WRITE C_ fst (getMemory K @ ,0x7b)) $
+    '(mpbir (noteq @ sseq2 @ nseq hfst) hnw))
+  (have 'hsetMem1 $ setMem1 (getMemory K) ,0x7b (chop 8 (chop (wsizeBits wSz64) v)) =
+      getMemory K, suc exGPF $ '(ifneg hnotp))
+  (have 'hlist $ toBytes (wsizeBytes wSz64) (chop (wsizeBits wSz64) v) =
+      chop 8 (chop (wsizeBits wSz64) v) : toBytes 7 (shr (chop (wsizeBits wSz64) v) 8) $
+    '(eqtr (toByteseq1 @ eqtr wSz64Bytes {,norm_num : $ 8 = suc 7 $}) toBytesS2))
+  (have 'hsetMem $ setMem (getMemory K) ,0x7b
+      (toBytes (wsizeBytes wSz64) (chop (wsizeBits wSz64) v)) = getMemory K, suc exGPF $
+    '(eqtr (setMemeq3 hlist) @ eqtr (setMemS (iani (getMemoryT hK) hu64) hsetMem1) @
+      ifneg @ sucne0 eqid))
+  '(iani hv @ mpbir writeEASz_m2 @ iani (iani (iani (iani hK wSz64T) hu64) chopT) @
+    mpbir (writeMem_setMem hsetMem) @
+    iani (iani (iani (iani hK hu64) toBytesT2) hexc) @
+    eqcom @ setExceptioneq1 set_getMemory));
+
+theorem exec_mov_store (K ds prot b2: nat)
+  (hK: $ K e. Config $) (hexc: $ readException K = 0 $)
+  (hpage: $ getMemory K @ ,0x7b = prot, b2 $) (hnw: $ ~(PROT_WRITE C_ prot) $):
+  $ mkRMI2 (IRM_mem 0 0 (posZ ,0x7b)) (IRM_reg x0) ds ->
+    execXAST K (xastMov wSz64 ds) (setException K (suc exGPF)) $ =
+(focus
+  (have 'hrax $ readReg K RAX e. u64 $ '(readRegT @ iani hK RAX_T))
+  '(sylibr execXASTCMov @ iexde @ mpbird ,eqtac @ iand
+    (mpbird (readEAeq3d @ eqtrd (a1i @ ifpos readCondFAlways) @ anwl mkRMI2_srcEA_rax) @
+      a1i @ readEA_reg hK RAX_T eqid)
+    (mpbird (writeEAeq3d @ anwl mkRMI2_destEA_7b) @ a1i @ write_gpf hK hexc hrax hpage hnw)));
+
+theorem lenSEGV: $ len ,"\x48\x89\x04\x25\x7b\x00\x00\x00" = 8 $ =
+'(eqtr (strlenSi (strlenSi (strlenSi (strlenSi (strlenSi (strlenSi (strlenSi
+  strlen1 ,(decsucn 1)) ,(decsucn 2)) ,(decsucn 3)) ,(decsucn 4)) ,(decsucn 5))
+  ,(decsucn 6)) ,(decsucn 7)) h2n8);
+
+pub theorem test_fault_segv {k2: nat} (k prot b2: nat)
+  (hk:  $ k e. Config $)
+  (hexc: $ readException k = 0 $)
+  (hc:  $ readMemX k (readRIP k) ,"\x48\x89\x04\x25\x7b\x00\x00\x00" $)
+  (hpage: $ getMemory k @ ,0x7b = prot, b2 $)
+  (hnw:  $ ~(PROT_WRITE C_ prot) $):
+  $ E. k2 (step k k2 /\ execExit k2 ,0x8b) $ =
+(focus
+  (have 'hK $ writeRIP k (readRIP k +_64 8) e. Config $ '(writeRIP_T @ iani hk add64T))
+  (have 'hexc2 $ readException (writeRIP k (readRIP k +_64 8)) = 0 $
+    '(eqtr readException_writeRIP hexc))
+  (have 'hpage2 $ getMemory (writeRIP k (readRIP k +_64 8)) @ ,0x7b = prot, b2 $
+    '(eqtr (appeq1 @ nseq getMemory_writeRIP) hpage))
+  (have 'hexit $ execExit (setException (writeRIP k (readRIP k +_64 8)) (suc exGPF)) ,0x8b $
+    '(iani (iani (setExceptionT @ iani hK (mpbir optS exGPF_T))
+        (ssel u8ss32 @ mpbir elu8 {,norm_num : $ ,0x8b < 16 * 16 $})) @
+      orl @ iani (orl read_setException) {,norm_num : $ ,0x8b != 0 $}))
+  (have 'hdec $ E. ds (mkRMI2 (IRM_mem 0 0 (posZ ,0x7b)) (IRM_reg x0) ds /\
+      decode (xastMov wSz64 ds) ,"\x48\x89\x04\x25\x7b\x00\x00\x00") $
+    '(parseInst_decode_mov text_start_8 (eqcom @ eqtr add01 lenSEGV) parseInst_mov_7b))
+  (have 'hstep $ step k (setException (writeRIP k (readRIP k +_64 8)) (suc exGPF)) $
+    '(ax_mp (eex @ stepId lenSEGV hk hexc hc anr @
+        syl (exec_mov_store hK hexc2 hpage2 hnw) anl) hdec))
+  '(iexie @ mpbiri (iani hstep hexit) ,eqtac));
+
+----------------------------------------------------------------------
+-- mmap: a failing mmap returns -errno (F1), not the pinned -1.
+--
+-- `test_mmap_einval` exhibits `-EINVAL` (= `bitsNeg 64 22`) as a permitted
+-- `execIO` successor of an mmap-pending state. Everything above it is local
+-- scaffolding for that one `pub` theorem:
+--   bitsNegval        `bitsNeg k n = 2^k - n` (n in Bits k, n != 0)
+--   d2pow{12,32,64}x  powers of two as hex literals
+--   isIOError_threshold / isIOError_einval   the `isIOError` band, evaluated
+--   mapPrivate_C_flags MAP_PRIVATE is a submask of MAP_PRIVATE|MAP_ANONYMOUS
+--   mmap_err / mmap_step   the `execMMap` error step, for any / the cleared cfg
+--   execIO_mmapErr    the whole `execIO` step, threading the four configs
+----------------------------------------------------------------------
+theorem bitsNegval (k n: nat) (hn: $ n e. Bits k $) (hpos: $ 0 < n $):
+  $ bitsNeg k n = 2 ^ k - n $ =
+(focus
+  (have 'hlt '(mpbi elBits2 hn))
+  (have 'hleu '(mpbir leltsuc @ mpbi (lteq2 @ eqcom sucupto) hlt))
+  (have 'hE $ bitsNot k n + 1 = 2 ^ k - n $
+    '(eqtr (addeq1 @ bitsNot_sub hn) @ eqtr (eqcom @ addsub hleu) @ subeq1 uptoadd1))
+  (have 'hsub $ 2 ^ k - n e. Bits k $ '(mpbir elBits2 @ subltid @ iani (powpos d0lt2) hpos))
+  (have 'hBits $ bitsNot k n + 1 e. Bits k $ '(mpbir (eleq1 hE) hsub))
+  '(eqtr (bitsAdd_eqid hBits) hE));
+
+do {
+  (def MIN_IOERR {{2 ^ 64} - {2 ^ 12}})
+  (def EINVAL {{2 ^ 64} - 22})
+};
+
+theorem isIOError_threshold: $ bitsNeg 64 (2 ^ 12) = ,MIN_IOERR $ =
+'(eqtr (bitsNegval (mpbir elBits2 @ mpbir (lteq d2pow12x d2pow64x)
+    {,norm_num : $ ,{2 ^ 12} < ,{2 ^ 64} $}) (powpos d0lt2)) @
+  eqtr (subeq d2pow64x d2pow12x) @
+  mpbir (subadd {,norm_num : $ ,{2 ^ 12} <= ,{2 ^ 64} $})
+    {,norm_num : $ ,{2 ^ 12} + ,MIN_IOERR = ,{2 ^ 64} $});
+do (def EINVAL {{2 ^ 64} - 22});
+-- The raw kernel returns for the errnos we test (each `2^64 - errno`), and a
+-- tactic proving `isIOError` of any of them (any value in the `(MIN_IOERR, 2^64)`
+-- band): `,(isIOErr ENOMEM)` etc.
+do {
+  (def ENOMEM {{2 ^ 64} - 12})
+  (def EBADF  {{2 ^ 64} - 9})
+  (def ENOENT {{2 ^ 64} - 2})
+  (def (isIOErr ret)
+    '(iani (mpbir elBits2 @ mpbir (lteq2 d2pow64x) {,norm_num : $ ,ret < ,{2 ^ 64} $}) @
+      mpbir (lteq1 isIOError_threshold) {,norm_num : $ ,MIN_IOERR < ,ret $}))
+};
+theorem isIOError_einval: $ isIOError ,EINVAL $ = ,(isIOErr EINVAL);
+
+-- `bitsNeg 32 1` (the anonymous-mmap fd, -1 as a u32) written out, so a test
+-- can state `RDX = 2^32 - 1` explicitly rather than the symbolic `bitsNeg`.
+theorem fd_neg1: $ bitsNeg 32 1 = ,{{2 ^ 32} - 1} $ =
+'(eqtr (bitsNegval (mpbir elBits2 @ mpbir (lteq2 d2pow32x)
+    {,norm_num : $ 1 < ,{2 ^ 32} $}) d0lt1) @
+  eqtr (subeq1 d2pow32x) @
+  mpbir (subadd {,norm_num : $ 1 <= ,{2 ^ 32} $})
+    {,norm_num : $ 1 + ,{{2 ^ 32} - 1} = ,{2 ^ 32} $});
+
+-- The fd register holds the *full* 64-bit `-1` (`2^64 - 1`); the kernel reads it
+-- as 32 bits, so `readRegSz k wSz32 8` chops it to the u32 `-1 = 2^32 - 1`.
+theorem chop32_neg1: $ chop 32 ,{{2 ^ 64} - 1} = ,{{2 ^ 32} - 1} $ =
+'(eqtr (chopeq2 @ eqcom @ eqtr (addeq1 @ muleq2 d2pow32x)
+    {,norm_num : $ ,{{2 ^ 32} - 1} * ,{2 ^ 32} + ,{{2 ^ 32} - 1} = ,{{2 ^ 64} - 1} $}) @
+  eqtr chop_shladd2 @ Bits_chop @ mpbir elBits2 @ mpbir (lteq2 d2pow32x)
+    {,norm_num : $ ,{{2 ^ 32} - 1} < ,{2 ^ 32} $});
+theorem mmap_fd (k: nat) (h: $ readReg k 8 = ,{{2 ^ 64} - 1} $):
+  $ readRegSz k wSz32 8 = bitsNeg 32 1 $ =
+'(eqtr (readRegSz_gt @ mpbir (lteq2 wSz32Bits) {,norm_num : $ 8 < 32 $}) @
+  eqtr (chopeq1 wSz32Bits) @ eqtr (chopeq2 h) @ eqtr chop32_neg1 @ eqcom fd_neg1);
+
+theorem mapPrivate_C_flags: $ MAP_PRIVATE C_ MAP_PRIVATE + MAP_ANONYMOUS $ =
+'(mpbir eq_bitAnd1 @
+  eqtr (bitAndeq {,norm_num : $ 2 = ,0x2 $} {,norm_num : $ 2 + 32 = ,0x22 $}) @
+  eqtr ,(to-bitop 'bitAnd '(h2n (x2)) '(hex (h2n (x2)) (x2))) @
+  eqcom {,norm_num : $ 2 = ,0x2 $});
+
+-- `MAP_ANONYMOUS` is NOT a submask of `MAP_PRIVATE` (`32 C_ 2` is false:
+-- `bitAnd 32 2 = 0 != 32`). For a file-backed mmap (`flags = MAP_PRIVATE`) this
+-- makes the model's `MAP_ANONYMOUS C_ flags -> fd = -1` obligation vacuous.
+theorem notAnon_C_priv: $ ~(MAP_ANONYMOUS C_ MAP_PRIVATE) $ =
+'(mtbir eq_bitAnd1 @ mpbir (noteq @ eqeq1 @
+    eqtr (bitAndeq {,norm_num : $ 32 = ,0x20 $} {,norm_num : $ 2 = ,0x2 $})
+      ,(to-bitop 'bitAnd '(hex (h2n (x2)) (x0)) '(h2n (x2))))
+  {,norm_num : $ ,0x0 != 32 $});
+
+-- Shared driver for every errno-returning syscall (open/read/write/fstat/mmap).
+-- The caller proves just the `execIO` disjunction with its own syscall's disjunct
+-- (config `k2`, the config-preserving syscalls take `k2 = setException k 0`); this
+-- lemma introduces `k1`/`k2`/`k3` and does the outer plumbing.
+theorem execIO_errno (i o k m ret k2: nat)
+  (hex: $ readException k = suc exSysCall $)
+  (hdisj: $ execOpen (setException k 0) ret /\ k2 = setException k 0 /\
+             mkKS i o (setReg k2 RAX ret) m = mkKS i o (setReg k2 RAX ret) m \/
+           E. i2 (execRead i (setException k 0) i2 k2 ret /\
+             mkKS i o (setReg k2 RAX ret) m = mkKS i2 o (setReg k2 RAX ret) m) \/
+           E. o2 (execWrite o (setException k 0) o2 ret /\ k2 = setException k 0 /\
+             mkKS i o (setReg k2 RAX ret) m = mkKS i o2 (setReg k2 RAX ret) m) \/
+           execFStat (setException k 0) k2 ret /\
+             mkKS i o (setReg k2 RAX ret) m = mkKS i o (setReg k2 RAX ret) m \/
+           E. m2 (execMMap (setException k 0) m k2 m2 ret /\
+             mkKS i o (setReg k2 RAX ret) m = mkKS i o (setReg k2 RAX ret) m2) $):
+  $ execIO (mkKS i o k m) (mkKS i o (setReg k2 RAX ret) m) $ =
+(focus
+  '(iexie @ iexde @ iexde @ iexde @ iexde @ mpbiri (iani (iani eqid hex) _) ,eqtac)
+  '(iexie @ iexde @ iexde @ mpbiri (iani (iani eqid eqid) hdisj) ,eqtac));
+
+-- The execMMap error step, generic over the `flags` value: a failing mmap
+-- (`isIOError ret`) leaves the config and mapping unchanged (`k2 = k /\ m2 = m`).
+-- The two submask directions (`MAP_PRIVATE C_ flags`, `flags C_ MAP_PRIVATE +
+-- MAP_ANONYMOUS`) and the anonymous-fd obligation come in as hypotheses, so the
+-- same lemma serves anonymous (`flags = MAP_PRIVATE|MAP_ANONYMOUS`, fd = -1) and
+-- file-backed (`flags = MAP_PRIVATE`, fd condition vacuous) maps.
+theorem mmap_err (k m flags ret: nat)
+  (hK: $ k e. Config $) (hm: $ m e. PageMapping (getMemory k) $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_mmap)) $)
+  (hrdi: $ readReg k RDI = ,0 $)
+  (hflags: $ readReg k 10 = flags $)
+  (hf1: $ MAP_PRIVATE C_ flags $)
+  (hf2: $ flags C_ MAP_PRIVATE + MAP_ANONYMOUS $)
+  (hfd: $ MAP_ANONYMOUS C_ flags -> readRegSz k wSz32 8 = bitsNeg 32 1 $)
+  (hprot: $ readReg k RDX e. Prot $)
+  (hoff: $ readReg k 9 = ,0 $)
+  (hret: $ isIOError ret $):
+  $ execMMap k m k m ret $ =
+(named @ focus
+  '(iani (iani (iani hK hm) (eqtr4 hrax dec9)) @
+    iexie @ iexde @ iexde @ iexde @ iexde @ mpbiri (iani (iani (iani (iani (iani (iani
+      (iani (iani (iani (iani (iani (iani
+        (eqtr4 hrdi dec0)
+        {eqid : $ readReg k RSI = readReg k RSI $})
+        {eqid : $ readReg k RDX = readReg k RDX $})
+        (eqcom hflags))
+        {eqid : $ readRegSz k wSz32 8 = readRegSz k wSz32 8 $})
+        {eqid : $ readReg k 9 = readReg k 9 $})
+        hf1)
+        hf2)
+        hfd)
+        hprot)
+        (eqtr4 hoff dec0))
+        (isIOErrorT hret))
+        (orl @ iani hret @ iani eqid eqid)) ,eqtac));
+
+theorem readRegSz_setException: $ readRegSz (setException k e) sz r = readRegSz k sz r $ =
+'(chopeq2 @ eqtr (ifeq2a @ a1i @ shreq1 readReg_setException) (ifeq3a @ a1i readReg_setException));
+
+theorem mmap_step (k m flags ret: nat)
+  (hk: $ k e. Config $) (hm: $ m e. PageMapping (getMemory k) $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_mmap)) $) (hrdi: $ readReg k RDI = ,0 $)
+  (hflags: $ readReg k 10 = flags $)
+  (hf1: $ MAP_PRIVATE C_ flags $)
+  (hf2: $ flags C_ MAP_PRIVATE + MAP_ANONYMOUS $)
+  (hfd: $ MAP_ANONYMOUS C_ flags -> readRegSz k wSz32 8 = bitsNeg 32 1 $)
+  (hprot: $ readReg k RDX e. Prot $) (hoff: $ readReg k 9 = ,0 $)
+  (hret: $ isIOError ret $):
+  $ execMMap (setException k 0) m (setException k 0) m ret $ =
+'(mmap_err
+   (setExceptionT @ iani hk opt0)
+   (mpbir (eleq2 @ PageMappingeq getMemory_setException) hm)
+   (eqtr readReg_setException hrax)
+   (eqtr readReg_setException hrdi)
+   (eqtr readReg_setException hflags)
+   hf1
+   hf2
+   (rsyl hfd (bi2i (eqeq1 readRegSz_setException)))
+   (mpbir (eleq1 readReg_setException) hprot)
+   (eqtr readReg_setException hoff)
+   hret);
+
+theorem execIO_mmapErr (i o k m flags ret: nat)
+  (hk: $ k e. Config $) (hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_mmap)) $) (hrdi: $ readReg k RDI = ,0 $)
+  (hflags: $ readReg k 10 = flags $)
+  (hf1: $ MAP_PRIVATE C_ flags $)
+  (hf2: $ flags C_ MAP_PRIVATE + MAP_ANONYMOUS $)
+  (hfd: $ MAP_ANONYMOUS C_ flags -> readRegSz k wSz32 8 = bitsNeg 32 1 $)
+  (hprot: $ readReg k RDX e. Prot $) (hoff: $ readReg k 9 = ,0 $)
+  (hret: $ isIOError ret $):
+  $ execIO (mkKS i o k m)
+      (mkKS i o (setReg (setException k 0) RAX ret) m) $ =
+(named @ focus
+  (have 'hD5
+    $ E. m2 (execMMap (setException k 0) m (setException k 0) m2 ret /\
+        mkKS i o (setReg (setException k 0) RAX ret) m
+        = mkKS i o (setReg (setException k 0) RAX ret) m2) $
+    '(iexie @ mpbiri (iani
+        (mmap_step hk hm hrax hrdi hflags hf1 hf2 hfd hprot hoff hret) eqid) ,eqtac))
+  '(execIO_errno hex (orr hD5)));
+
+-- The execMMap SUCCESS step: a mmap that maps memory and returns an address
+-- (`~isIOError ret`). Unlike the error branch, the success branch's memory
+-- effect (`mapMem`) plus the buffer/zero-region conditions are abstracted into a
+-- single hypothesis `hmap` (the kernel really maps; the harness does a real mmap
+-- and confirms the return is a valid address). Mirrors `mmap_err` but takes the
+-- ifp false branch (`orr`).
+theorem mmap_ok (k m flags ret k2 m2: nat)
+  (hK: $ k e. Config $) (hm: $ m e. PageMapping (getMemory k) $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_mmap)) $)
+  (hrdi: $ readReg k RDI = ,0 $)
+  (hflags: $ readReg k 10 = flags $)
+  (hf1: $ MAP_PRIVATE C_ flags $)
+  (hf2: $ flags C_ MAP_PRIVATE + MAP_ANONYMOUS $)
+  (hfd: $ MAP_ANONYMOUS C_ flags -> readRegSz k wSz32 8 = bitsNeg 32 1 $)
+  (hprot: $ readReg k RDX e. Prot $)
+  (hoff: $ readReg k 9 = ,0 $)
+  (hu64: $ ret e. u64 $)
+  (hnoterr: $ ~isIOError ret $)
+  (hmap: $ E. pad E. buf (buf e. Array u8 (readReg k RSI + pad) /\
+      (MAP_ANONYMOUS C_ flags -> all (sn 0) buf) /\
+      A. i (i < readReg k RSI + pad -> m @ (ret +_64 i) = 0) /\
+      mapMem (readReg k RDX) k m ret buf k2 m2) $):
+  $ execMMap k m k2 m2 ret $ =
+(focus
+  '(iani (iani (iani hK hm) (eqtr4 hrax dec9)) @
+    iexie @ iexde @ iexde @ iexde @ iexde @ mpbiri _ ,eqtac)
+  '(iani (iani (iani (iani (iani (iani (iani _ hf1) hf2) hfd) hprot) _) hu64) _)
+  '(iani (iani (iani (iani (iani (eqtr4 hrdi dec0) eqid) eqid) (eqcom hflags)) eqid) eqid)
+  '(eqtr4 hoff dec0)
+  '(orr @ iani hnoterr hmap));
+
+-- The whole `execIO` step for a successful mmap (the MMap disjunct). Unlike the
+-- errno syscalls, mmap CHANGES the page mapping (`m -> m2`), so this builds
+-- `execIO` directly (the shared `execIO_errno` hardcodes the mapping unchanged)
+-- rather than routing through it.
+theorem execIO_mmapOk
+  (hk: $ k e. Config $) (hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_mmap)) $) (hrdi: $ readReg k RDI = ,0 $)
+  (hflags: $ readReg k 10 = flags $)
+  (hf1: $ MAP_PRIVATE C_ flags $)
+  (hf2: $ flags C_ MAP_PRIVATE + MAP_ANONYMOUS $)
+  (hfd: $ MAP_ANONYMOUS C_ flags -> readRegSz k wSz32 8 = bitsNeg 32 1 $)
+  (hprot: $ readReg k RDX e. Prot $) (hoff: $ readReg k 9 = ,0 $)
+  (hu64: $ ret e. u64 $) (hnoterr: $ ~isIOError ret $)
+  (hmap: $ E. pad E. buf (buf e. Array u8 (readReg (setException k 0) RSI + pad) /\
+      (MAP_ANONYMOUS C_ flags -> all (sn 0) buf) /\
+      A. j (j < readReg (setException k 0) RSI + pad -> m @ (ret +_64 j) = 0) /\
+      mapMem (readReg (setException k 0) RDX) (setException k 0) m ret buf k2 m2) $):
+  $ execIO (mkKS i o k m) (mkKS i o (setReg k2 RAX ret) m2) $ =
+(named @ focus
+  '(iexie @ iexde @ iexde @ iexde @ iexde @ mpbiri (iani (iani eqid hex) _) ,eqtac)
+  '(iexie @ iexde @ iexde @ mpbiri (iani (iani eqid eqid) (orr _)) ,eqtac)
+  '(iexie @ mpbiri (iani (mmap_ok _ _ _ _ _ hf1 hf2 _ _ _ hu64 hnoterr hmap) eqid) ,eqtac)
+  '(setExceptionT @ iani hk opt0)
+  '(mpbir (eleq2 @ PageMappingeq getMemory_setException) hm)
+  '(eqtr readReg_setException hrax)
+  '(eqtr readReg_setException hrdi)
+  '(eqtr readReg_setException hflags)
+  '(rsyl hfd @ bi2i @ eqeq1 readRegSz_setException)
+  '(mpbir (eleq1 readReg_setException) hprot)
+  '(eqtr readReg_setException hoff));
+
+pub theorem test_mmap_einval {k2 m2: nat} (i o k m: nat)
+  (_hi: $ i e. List u8 $) (_ho: $ o e. List u8 $)
+  (hk: $ k e. Config $) (hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_mmap)) $) (hrdi: $ readReg k RDI = ,0 $)
+  (hflags: $ readReg k 10 = ,(eval '(add (MAP_PRIVATE) (MAP_ANONYMOUS))) $)
+  (hfd: $ readReg k 8 = ,{{2 ^ 64} - 1} $)
+  (hrdx: $ readReg k RDX = ,(eval '(PROT_READ)) $) (hoff: $ readReg k 9 = ,0 $):
+  $ E. k2 E. m2 (execIO (mkKS i o k m) (mkKS i o k2 m2) /\ readReg k2 RAX = ,EINVAL) $ =
+(focus
+  '(iexie @ iexde @ mpbiri (iani _ read_setReg) ,eqtac)
+  '(execIO_mmapErr hk hm hex hrax hrdi _ mapPrivate_C_flags ssid _ _ hoff isIOError_einval)
+  '(eqtr hflags {,norm_num : $ ,0x22 = 2 + 32 $})
+  '(a1i @ mmap_fd hfd)
+  '(mpbir (eleq1 hrdx) @ mpbi (eleq1 dec1) PROT_READ_T));
+
+pub theorem test_mmap_enomem {k2 m2: nat} (i o k m: nat)
+  (_hi: $ i e. List u8 $) (_ho: $ o e. List u8 $)
+  (hk: $ k e. Config $) (hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_mmap)) $) (hrdi: $ readReg k RDI = ,0 $)
+  (hflags: $ readReg k 10 = ,(eval '(add (MAP_PRIVATE) (MAP_ANONYMOUS))) $)
+  (hfd: $ readReg k 8 = ,{{2 ^ 64} - 1} $)
+  (hrdx: $ readReg k RDX = ,(eval '(PROT_READ)) $) (hoff: $ readReg k 9 = ,0 $):
+  $ E. k2 E. m2 (execIO (mkKS i o k m) (mkKS i o k2 m2) /\ readReg k2 RAX = ,ENOMEM) $ =
+(focus
+  '(iexie @ iexde @ mpbiri (iani _ read_setReg) ,eqtac)
+  '(execIO_mmapErr hk hm hex hrax hrdi _ mapPrivate_C_flags ssid _ _ hoff ,(isIOErr ENOMEM))
+  '(eqtr hflags {,norm_num : $ ,0x22 = 2 + 32 $})
+  '(a1i @ mmap_fd hfd)
+  '(mpbir (eleq1 hrdx) @ mpbi (eleq1 dec1) PROT_READ_T));
+
+-- File-backed mmap (`flags = MAP_PRIVATE`, no `MAP_ANONYMOUS`): the submask
+-- directions swap (`MAP_PRIVATE C_ MAP_PRIVATE` is `ssid`; `MAP_PRIVATE C_
+-- MAP_PRIVATE + MAP_ANONYMOUS` is `mapPrivate_C_flags`) and the fd = -1
+-- obligation is vacuous (`MAP_ANONYMOUS C_ MAP_PRIVATE` is false), so `absurd
+-- notAnon_C_priv` discharges it regardless of the (valid) fd in register 8.
+pub theorem test_mmap_einval_file {k2 m2: nat} (i o k m: nat)
+  (_hi: $ i e. List u8 $) (_ho: $ o e. List u8 $)
+  (hk: $ k e. Config $) (hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_mmap)) $) (hrdi: $ readReg k RDI = ,0 $)
+  (hflags: $ readReg k 10 = ,(eval '(MAP_PRIVATE)) $)
+  (_hfd: $ readReg k 8 = ,0 $)
+  (hrdx: $ readReg k RDX = ,(eval '(PROT_READ)) $) (hoff: $ readReg k 9 = ,0 $):
+  $ E. k2 E. m2 (execIO (mkKS i o k m) (mkKS i o k2 m2) /\ readReg k2 RAX = ,EINVAL) $ =
+(focus
+  '(iexie @ iexde @ mpbiri (iani _ read_setReg) ,eqtac)
+  '(execIO_mmapErr hk hm hex hrax hrdi
+    (eqtr hflags {,norm_num : $ ,0x2 = 2 $}) ssid mapPrivate_C_flags
+    (absurd notAnon_C_priv)
+    (mpbir (eleq1 hrdx) @ mpbi (eleq1 dec1) PROT_READ_T) hoff isIOError_einval));
+
+-- mmap success: an anonymous `mmap` returns a WRITABLE buffer. The address is the
+-- kernel's choice, so the postcondition exhibits a good (`~isIOError`) return
+-- whose buffer supports a write without faulting (`E. k3 (writeMem … /\ exc 0)`) --
+-- the converse of the segv test. The memory effect (`mapMem`) and the write's
+-- success are abstracted (like read/fstat abstract `writeMem`); the harness maps a
+-- region, writes to it (inline asm), and confirms the process does not crash.
+pub theorem test_mmap_ok {k2 m2 k3 pad buf j: nat} (i o k m k2m mv rv kw: nat)
+  (_hi: $ i e. List u8 $) (_ho: $ o e. List u8 $)
+  (hk: $ k e. Config $) (hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_mmap)) $) (hrdi: $ readReg k RDI = ,0 $)
+  (hflags: $ readReg k 10 = ,(eval '(add (MAP_PRIVATE) (MAP_ANONYMOUS))) $)
+  (hprot: $ readReg k RDX = ,(eval '(add (PROT_READ) (PROT_WRITE))) $)
+  (hfd:  $ readReg k 8 = ,{{2 ^ 64} - 1} $)
+  (hoff: $ readReg k 9 = ,0 $)
+  (hu64: $ rv e. u64 $) (hnoterr: $ ~isIOError rv $)
+  (hmap: $ E. pad E. buf (buf e. Array u8 (readReg (setException k 0) RSI + pad) /\
+      (MAP_ANONYMOUS C_ MAP_PRIVATE + MAP_ANONYMOUS -> all (sn 0) buf) /\
+      A. j (j < readReg (setException k 0) RSI + pad -> m @ (rv +_64 j) = 0) /\
+      mapMem (readReg (setException k 0) RDX) (setException k 0) m rv buf k2m mv) $)
+  (hwr: $ writeMem (setReg k2m RAX rv) rv ,"\x00" kw /\ readException kw = 0 $):
+  $ E. k2 E. m2 (execIO (mkKS i o k m) (mkKS i o k2 m2) /\
+      E. k3 (writeMem k2 (readReg k2 RAX) ,"\x00" k3 /\ readException k3 = 0)) $ =
+(focus
+  '(iexie @ iexde @ mpbiri (iani _ _) ,eqtac)
+  '(execIO_mmapOk hk hm hex hrax hrdi (eqtr hflags {,norm_num : $ ,0x22 = 2 + 32 $})
+    mapPrivate_C_flags ssid (a1i @ mmap_fd hfd) _ hoff hu64 hnoterr hmap)
+  '(mpbir (eleq1 hprot) (PROT_T_lem ,norm_num))
+  '(iexie @ mpbiri (mpbir (aneq1i @ writeMemeq2 read_setReg) hwr) ,eqtac));
+
+----------------------------------------------------------------------
+-- write: a write to a truncated-to-stdout fd appends to the output (F8).
+--
+-- `test_write` writes `buf` (count bytes at RSI) with `RDI = 2^32 + 1`; the
+-- kernel reads `fd` as 32 bits, so the high word is dropped and the fd is
+-- `stdout` (1). The bytes land on the output stream and RAX = count. The
+-- pre-F6/F8 model, reading the full 64-bit RDI, would see fd = 0x1_0000_0001
+-- and drop the write. Local scaffolding:
+--   chop32_fd / fd_stdout   the 32-bit fd read truncates 2^32+1 to stdout
+--   readMem_setException    a read is unaffected by clearing the exception
+--   notIOError_count        a u32 byte count is not in the errno band
+--   write_extendIfFD        the output grows by buf when fd = stdout
+--   write_step / execIO_write   the execWrite / execIO steps
+----------------------------------------------------------------------
+theorem chop32_fd: $ chop 32 ,{{2 ^ 32} + 1} = ,0x1 $ =
+'(eqtr (chopeq2 @ eqcom @ eqtr (addeq1 @ eqtr shl11 d2pow32x)
+    {,norm_num : $ ,{2 ^ 32} + ,0x1 = ,{{2 ^ 32} + 1} $}) @
+  eqtr chop_shladd2 @ Bits_chop @ mpbir elBits2 @
+  mpbir (lteq2 d2pow32x) {,norm_num : $ ,0x1 < ,{2 ^ 32} $});
+
+theorem fd_stdout (hrdi: $ readReg k RDI = ,{{2 ^ 32} + 1} $):
+  $ readRegSz (setException k 0) wSz32 RDI = stdout $ =
+'(eqtr readRegSz_setException @
+  eqtr (readRegSz_gt @ mpbir (lteq2 wSz32Bits) {,norm_num : $ 8 < 32 $}) @
+  eqtr (chopeq1 wSz32Bits) @ eqtr (chopeq2 hrdi) @ eqtr chop32_fd {,norm_num : $ ,0x1 = 1 $});
+
+theorem readMem_setException: $ readMem k a l -> readMem (setException k 0) a l $ =
+'(iand (syl (syl setExceptionT @ iand id @ a1i opt0) anl)
+  (rsyl anr (bi1i (readMemoryeq2 @ eqcom getMemory_setException))));
+
+theorem notIOError_count (hc: $ count e. u32 $): $ ~isIOError count $ =
+'(con3 anr @ ltnlt @ ltletr (mpbi elBits2 hc) @
+  mpbir (leeq d2pow32x isIOError_threshold) {,norm_num : $ ,{2 ^ 32} <= ,MIN_IOERR $});
+
+theorem write_extendIfFD
+  (ho: $ o e. List u8 $) (hbufA: $ buf e. Array u8 count $)
+  (hrdi: $ readReg k RDI = ,{{2 ^ 32} + 1} $):
+  $ extendIfFD stdout (readRegSz (setException k 0) wSz32 RDI) o buf (o ++ buf) $ =
+'(iani (iani ho (elArrayList hbufA)) @ eqcom @ ifpos @ fd_stdout hrdi);
+
+theorem write_step
+  (ho: $ o e. List u8 $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_write)) $)
+  (hrdi: $ readReg k RDI = ,{{2 ^ 32} + 1} $)
+  (hrdx: $ readReg k RDX = count $)
+  (hbuf: $ readMem k (readReg k RSI) buf $)
+  (hbufA: $ buf e. Array u8 count $)
+  (hcount: $ count e. u32 $):
+  $ execWrite o (setException k 0) (o ++ buf) count $ =
+(focus
+  (have 'hmem '(mpbi (readMemeq2 @ eqcom readReg_setException) @ readMem_setException hbuf))
+  '(iani (iani ho @ eqtr readReg_setException @ eqtr4 hrax dec1) @
+    iexie @ iexde @ iexde @ mpbiri _ ,eqtac)
+  '(iani (iani (iani (iani eqid @ eqtr2 readReg_setException hrdx) hmem) hbufA) @
+    orr @ iani (notIOError_count hcount) @ iani leid _)
+  '(iexie @ mpbiri (iani (iani (elArraylen hbufA) (write_extendIfFD ho hbufA hrdi)) hmem) ,eqtac));
+
+-- The execWrite ERROR step: a write to a fd that faults (`isIOError ret`) leaves
+-- the output stream unchanged (`l2 = l`). The buffer must still be readable, but
+-- its content is irrelevant.
+theorem write_err
+  (ho: $ o e. List u8 $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_write)) $)
+  (hrdx: $ readReg k RDX = count $)
+  (hbuf: $ readMem k (readReg k RSI) buf $)
+  (hbufA: $ buf e. Array u8 count $)
+  (hret: $ isIOError ret $):
+  $ execWrite o (setException k 0) o ret $ =
+(named @ focus
+  '(iani (iani ho (eqtr readReg_setException @ eqtr4 hrax dec1)) @ iexie @ iexde @ iexde @
+    mpbiri (iani (iani (iani (iani eqid @ eqtr2 readReg_setException hrdx) _) hbufA) _) ,eqtac)
+  '(mpbi (readMemeq2 @ eqcom readReg_setException) @ readMem_setException hbuf)
+  '(orl @ iani hret eqid));
+
+theorem execIO_write
+  (ho: $ o e. List u8 $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_write)) $)
+  (hrdi: $ readReg k RDI = ,{{2 ^ 32} + 1} $)
+  (hrdx: $ readReg k RDX = count $)
+  (hbuf: $ readMem k (readReg k RSI) buf $)
+  (hbufA: $ buf e. Array u8 count $)
+  (hcount: $ count e. u32 $):
+  $ execIO (mkKS i o k m)
+      (mkKS i (o ++ buf) (setReg (setException k 0) RAX count) m) $ =
+(named @ focus
+  '(iexie @ iexde @ iexde @ iexde @ iexde @ mpbiri (iani (iani eqid hex) _) ,eqtac)
+  '(iexie @ iexde @ iexde @ mpbiri (iani (iani eqid eqid) _) ,eqtac)
+  '(orl @ orl @ orr @ iexie @ mpbiri (iani (iani _ eqid) eqid) ,eqtac)
+  '(write_step ho hrax hrdi hrdx hbuf hbufA hcount));
+
+-- `,"mm0\n"` (4 bytes) as an `Array u8`, via `s2nT` (a string is a `List u8`)
+-- and the string-length chain.
+theorem str_mm0: $ ,"mm0\n" e. Array u8 ,4 $ =
+'(mpbir elArray @ iani s2nT @ eqtr
+  (eqtr (leneq s2nscons) @ eqtr lenS @ suceq @
+    eqtr (leneq s2nscons) @ eqtr lenS @ suceq @
+    eqtr (leneq s2nscons) @ eqtr lenS @ suceq @
+    eqtr (leneq s2ns1) len1) dec4);
+
+-- The whole `execIO` step for a failing write (the Write disjunct): output
+-- unchanged, RAX = ret. Routes through the shared `execIO_errno`.
+theorem execIO_writeErr
+  (ho: $ o e. List u8 $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_write)) $)
+  (hrdx: $ readReg k RDX = count $)
+  (hbuf: $ readMem k (readReg k RSI) buf $)
+  (hbufA: $ buf e. Array u8 count $)
+  (hret: $ isIOError ret $):
+  $ execIO (mkKS i o k m) (mkKS i o (setReg (setException k 0) RAX ret) m) $ =
+(named @ focus
+  '(execIO_errno hex (orl @ orl @ orr _))
+  '(iexie @ mpbiri (iani (iani (write_err ho hrax hrdx hbuf hbufA hret) eqid) eqid) ,eqtac));
+
+pub theorem test_write {k2 m2: nat} (i o k m: nat)
+  (_hi: $ i e. List u8 $) (ho: $ o e. List u8 $)
+  (_hk: $ k e. Config $) (_hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_write)) $)
+  (hrdi: $ readReg k RDI = ,{{2 ^ 32} + 1} $)
+  (hrdx: $ readReg k RDX = ,4 $)
+  (hbuf: $ readMem k (readReg k RSI) ,"mm0\n" $):
+  $ E. k2 E. m2 (execIO (mkKS i o k m) (mkKS i (o ++ ,"mm0\n") k2 m2) /\
+      readReg k2 RAX = ,4) $ =
+'(iexie @ iexde @ mpbiri (iani
+    (execIO_write ho hex hrax hrdi hrdx hbuf str_mm0
+      (ssel u8ss32 @ mpbir elu8 {,norm_num : $ ,4 < 16 * 16 $})) read_setReg) ,eqtac);
+
+pub theorem test_write_ebadf {k2 m2: nat} (i o k m buf: nat)
+  (_hi: $ i e. List u8 $) (ho: $ o e. List u8 $)
+  (_hk: $ k e. Config $) (_hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_write)) $)
+  (_hrdi: $ readReg k RDI = ,{{2 ^ 64} - 1} $)
+  (hrdx: $ readReg k RDX = ,1 $)
+  (hbuf: $ readMem k (readReg k RSI) buf $)
+  (hbufA: $ buf e. Array u8 ,1 $):
+  $ E. k2 E. m2 (execIO (mkKS i o k m) (mkKS i o k2 m2) /\ readReg k2 RAX = ,EBADF) $ =
+'(iexie @ iexde @ mpbiri (iani
+    (execIO_writeErr ho hex hrax hrdx hbuf hbufA ,(isIOErr EBADF)) read_setReg) ,eqtac);
+
+----------------------------------------------------------------------
+-- read: a read delivers data into the buffer and grows the input (F7).
+--
+-- `test_read` reads `count` bytes from `stdin` (fd 0) into the buffer at RSI:
+-- the bytes `l1` are written to memory (giving `kw`), the input stream grows to
+-- `i ++ l1`, and RAX = count. `writeMem` requires the exception already clear,
+-- which it is on the cleared config `setException k 0`. Local scaffolding:
+--   fd_stdin / read_extendIfFD   fd 0 is stdin; the input grows by l1
+--   read_step / execIO_read      the execRead / execIO steps
+----------------------------------------------------------------------
+theorem fd_stdin (k: nat) (hrdi: $ readReg k RDI = ,0 $):
+  $ readRegSz (setException k 0) wSz32 RDI = stdin $ =
+'(eqtr readRegSz_setException @
+  eqtr (readRegSz_gt @ mpbir (lteq2 wSz32Bits) {,norm_num : $ 8 < 32 $}) @
+  eqtr (chopeq2 @ eqtr hrdi @ eqcom dec0) chop02);
+
+theorem read_extendIfFD (k i l1 count: nat)
+  (hi: $ i e. List u8 $) (hl1A: $ l1 e. Array u8 count $)
+  (hrdi: $ readReg k RDI = ,0 $):
+  $ extendIfFD stdin (readRegSz (setException k 0) wSz32 RDI) i l1 (i ++ l1) $ =
+'(iani (iani hi (elArrayList hl1A)) @ eqcom @ ifpos @ fd_stdin hrdi);
+
+theorem read_step (k i l1 buf count k2: nat)
+  (hi: $ i e. List u8 $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_read)) $)
+  (hrdi: $ readReg k RDI = ,0 $)
+  (hrdx: $ readReg k RDX = count $)
+  (hbuf: $ readMem k (readReg k RSI) buf $)
+  (hbufA: $ buf e. Array u8 count $)
+  (hl1A: $ l1 e. Array u8 count $)
+  (hwrite: $ writeMem (setException k 0) (readReg k RSI) l1 k2 $)
+  (hk2: $ readException k2 = 0 $)
+  (hcount: $ count e. u32 $):
+  $ execRead i (setException k 0) (i ++ l1) k2 count $ =
+(focus
+  (def hmem '(mpbi (readMemeq2 @ eqcom readReg_setException) @ readMem_setException hbuf))
+  (have 'hL1
+    $ E. l1x (len l1x = count /\
+        extendIfFD stdin (readRegSz (setException k 0) wSz32 RDI) i l1x (i ++ l1) /\
+        writeMem (setException k 0) (readReg (setException k 0) RSI) l1x k2 /\
+        readException k2 = 0) $
+    '(iexie @ mpbiri (iani (iani (iani
+        (elArraylen hl1A)
+        (read_extendIfFD hi hl1A hrdi))
+        (mpbi (writeMemeq2 @ eqcom readReg_setException) hwrite))
+        hk2) ,eqtac))
+  '(iani (iani hi (eqtr readReg_setException @ eqtr4 hrax dec0)) @
+    iexie @ iexde @ iexde @ mpbiri (iani (iani (iani (iani eqid ,hmem) hbufA)
+      (eqcom @ eqtr readReg_setException hrdx))
+      (orr @ iani (notIOError_count hcount) @ iani leid hL1)) ,eqtac));
+
+theorem execIO_read (i o k m l1 buf count kw: nat)
+  (hi: $ i e. List u8 $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_read)) $)
+  (hrdi: $ readReg k RDI = ,0 $)
+  (hrdx: $ readReg k RDX = count $)
+  (hbuf: $ readMem k (readReg k RSI) buf $)
+  (hbufA: $ buf e. Array u8 count $)
+  (hl1A: $ l1 e. Array u8 count $)
+  (hwrite: $ writeMem (setException k 0) (readReg k RSI) l1 kw $)
+  (hk2: $ readException kw = 0 $)
+  (hcount: $ count e. u32 $):
+  $ execIO (mkKS i o k m)
+      (mkKS (i ++ l1) o (setReg kw RAX count) m) $ =
+(focus
+  (have 'hD2
+    $ E. i2 (execRead i (setException k 0) i2 kw count /\
+        mkKS (i ++ l1) o (setReg kw RAX count) m = mkKS i2 o (setReg kw RAX count) m) $
+    '(iexie @ mpbiri (iani
+        (read_step hi hrax hrdi hrdx hbuf hbufA hl1A hwrite hk2 hcount) eqid) ,eqtac))
+  (have 'hInner
+    $ E. k1 E. k2 E. k3 (k1 = setException k 0 /\ k3 = setReg k2 RAX count /\ (
+        execOpen k1 count /\ k2 = k1 /\
+          mkKS (i ++ l1) o (setReg kw RAX count) m = mkKS i o k3 m \/
+        E. i2 (execRead i k1 i2 k2 count /\
+          mkKS (i ++ l1) o (setReg kw RAX count) m = mkKS i2 o k3 m) \/
+        E. o2 (execWrite o k1 o2 count /\ k2 = k1 /\
+          mkKS (i ++ l1) o (setReg kw RAX count) m = mkKS i o2 k3 m) \/
+        execFStat k1 k2 count /\
+          mkKS (i ++ l1) o (setReg kw RAX count) m = mkKS i o k3 m \/
+        E. m2 (execMMap k1 m k2 m2 count /\
+          mkKS (i ++ l1) o (setReg kw RAX count) m = mkKS i o k3 m2))) $
+    '(iexie @ iexde @ iexde @
+      mpbiri (iani (iani
+          {eqid : $ setException k 0 = setException k 0 $}
+          {eqid : $ setReg kw RAX count = setReg kw RAX count $})
+        (orl @ orl @ orl @ orr hD2)) ,eqtac))
+  '(iexie @ iexde @ iexde @ iexde @ iexde @
+    mpbiri (iani (iani eqid hex) hInner) ,eqtac));
+
+-- `,"read!\n"` (6 bytes), the delivered data, as an `Array u8`.
+theorem str_read: $ ,"read!\n" e. Array u8 ,6 $ =
+'(mpbir elArray @ iani s2nT @ eqtr
+  (eqtr (leneq s2nscons) @ eqtr lenS @ suceq @
+    eqtr (leneq s2nscons) @ eqtr lenS @ suceq @
+    eqtr (leneq s2nscons) @ eqtr lenS @ suceq @
+    eqtr (leneq s2nscons) @ eqtr lenS @ suceq @
+    eqtr (leneq s2nscons) @ eqtr lenS @ suceq @
+    eqtr (leneq s2ns1) len1) dec6);
+
+pub theorem test_read {k2 m2: nat} (i o k m buf kw: nat)
+  (hi: $ i e. List u8 $) (_ho: $ o e. List u8 $)
+  (_hk: $ k e. Config $) (_hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_read)) $)
+  (hrdi: $ readReg k RDI = ,0 $)
+  (hrdx: $ readReg k RDX = ,6 $)
+  (hbuf: $ readMem k (readReg k RSI) buf $)
+  (hbufA: $ buf e. Array u8 ,6 $)
+  (hwrite: $ writeMem (setException k 0) (readReg k RSI) ,"read!\n" kw $)
+  (hk2: $ readException kw = 0 $):
+  $ E. k2 E. m2 (execIO (mkKS i o k m) (mkKS (i ++ ,"read!\n") o k2 m2) /\
+      readReg k2 RAX = ,6) $ =
+'(iexie @ iexde @ mpbiri (iani
+    (execIO_read hi hex hrax hrdi hrdx hbuf hbufA str_read hwrite hk2
+      (ssel u8ss32 @ mpbir elu8 {,norm_num : $ ,6 < 16 * 16 $})) read_setReg) ,eqtac);
+
+-- The execRead ERROR step (mirror of `write_err`): a read from a fd that faults
+-- (`isIOError ret`) leaves both the input stream (`l2 = l`) and the config
+-- (`k2 = k`) unchanged. The buffer must still be readable but is not written.
+theorem read_err (i k buf count ret: nat)
+  (hi: $ i e. List u8 $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_read)) $)
+  (hrdx: $ readReg k RDX = count $)
+  (hbuf: $ readMem k (readReg k RSI) buf $)
+  (hbufA: $ buf e. Array u8 count $)
+  (hret: $ isIOError ret $):
+  $ execRead i (setException k 0) i (setException k 0) ret $ =
+(named @ focus
+  (def hmem '(mpbi (readMemeq2 @ eqcom readReg_setException) @ readMem_setException hbuf))
+  '(iani (iani hi (eqtr readReg_setException @ eqtr4 hrax dec0)) @
+    iexie @ iexde @ iexde @ mpbiri (iani (iani (iani (iani eqid _) hbufA) _) _) ,eqtac)
+  '(mpbi (readMemeq2 @ eqcom readReg_setException) @ readMem_setException hbuf)
+  '(eqcom @ eqtr readReg_setException hrdx)
+  '(orl @ iani hret (iani eqid eqid)));
+
+-- The whole `execIO` step for a failing read (the Read disjunct): input and
+-- output unchanged, RAX = ret. Routes through the shared `execIO_errno`.
+theorem execIO_readErr (i o k m buf count ret: nat)
+  (hi: $ i e. List u8 $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_read)) $)
+  (hrdx: $ readReg k RDX = count $)
+  (hbuf: $ readMem k (readReg k RSI) buf $)
+  (hbufA: $ buf e. Array u8 count $)
+  (hret: $ isIOError ret $):
+  $ execIO (mkKS i o k m) (mkKS i o (setReg (setException k 0) RAX ret) m) $ =
+(named @ focus
+  '(execIO_errno hex @ orl @ orl @ orl @ orr @
+    iexie @ mpbiri (iani (read_err hi hrax hrdx hbuf hbufA hret) eqid) ,eqtac));
+
+pub theorem test_read_ebadf {k2 m2: nat} (i o k m buf: nat)
+  (hi: $ i e. List u8 $) (_ho: $ o e. List u8 $)
+  (_hk: $ k e. Config $) (_hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_read)) $)
+  (_hrdi: $ readReg k RDI = ,{{2 ^ 64} - 1} $)
+  (hrdx: $ readReg k RDX = ,1 $)
+  (hbuf: $ readMem k (readReg k RSI) buf $)
+  (hbufA: $ buf e. Array u8 ,1 $):
+  $ E. k2 E. m2 (execIO (mkKS i o k m) (mkKS i o k2 m2) /\ readReg k2 RAX = ,EBADF) $ =
+'(iexie @ iexde @ mpbiri (iani
+    (execIO_readErr hi hex hrax hrdx hbuf hbufA ,(isIOErr EBADF)) read_setReg) ,eqtac);
+
+----------------------------------------------------------------------
+-- Concrete C-string parsing: from the null-terminated bytes a real program
+-- lays out in memory, prove `readCStr k a <filename>` -- i.e. the model's
+-- `toCStr`/`readCStr` actually parse the concrete filename. `mkReadCStr` is a
+-- lisp generator: for a concrete filename string it emits the proof, its depth
+-- the filename length (every per-byte fact -- the byte value, `!= 0` -- is
+-- inferred from the goal and closed by `norm_num`). The memory hypothesis must
+-- be named `hmem`. `mk-nt-eq` proves `<null-term> = <filename> |> 0` by meta-
+-- recursion routing both the `scons`/`s1` and the `snoc` side through the common
+-- list normal form `c1 : … : cn : (0 : 0)`; `mk-all` proves every byte `!= 0`.
+----------------------------------------------------------------------
+theorem ch00: $ ch x0 x0 = 0 $ = '(eqtr c2nh2n h2n0);
+theorem nullnat: $ s1 (ch x0 x0) = 0 : 0 $ = '(eqtr s2ns1 (conseq1 ch00));
+-- A byte whose high nibble is positive is nonzero (`ch a b >= 0x10 > 0`). This is
+-- the per-char obligation: `x0 < a` is a direct hex lemma (`norm_num`), and we
+-- never parse a filename byte below `0x10`, so the low nibble never matters.
+theorem chab_ne0 (a b: hex) (h: $ x0 < a $): $ ch a b != 0 $ =
+'(necom @ ltne @ mpbi (lteq h2n0 (eqcom c2nhex)) (declt0x h));
+theorem readCStrI (k a s l: nat) (h1: $ toCStr s l $) (h2: $ readMem k a l $):
+  $ readCStr k a s $ = '(iexie @ mpbiri (iani h1 h2) ,eqtac);
+
+-- The C-string parse, by meta-induction wrapped directly in `toCStr`: base is
+-- the last filename byte before the terminator, step prepends a byte. Each byte
+-- is `ch a b` with `x0 < a` (nonzero via `chab_ne0`).
+theorem toCStr1 (a b: hex) (hc: $ x0 < a $): $ toCStr (s1 (ch a b)) (ch a b ': ,"\x00") $ =
+(named '(iani
+  (mpbir (alleq2 s2ns1) @ mpbir allS @ iani (mpbir (elabe neeq1) (chab_ne0 hc)) all0)
+  (eqcom @ eqtr (snoceq1 s2ns1) @ eqtr snocS @ eqtr (conseq2 snoc0) @
+    eqtr (conseq2 @ eqcom nullnat) (eqcom s2nscons))));
+theorem toCStrS (s t: string) (a b: hex) (h: $ toCStr s t $) (hc: $ x0 < a $):
+  $ toCStr (ch a b ': s) (ch a b ': t) $ =
+(named '(iani
+  (mpbir (alleq2 s2nscons) @ mpbir allS @ iani (mpbir (elabe neeq1) (chab_ne0 hc)) (anl h))
+  (eqcom @ eqtr (snoceq1 s2nscons) @ eqtr snocS @
+    eqtr (conseq2 @ eqcom @ anr h) (eqcom s2nscons))));
+
+do {
+  -- toCStr for an n-char filename (n >= 1): `toCStr1` for the last byte, then
+  -- `toCStrS` for each earlier byte; `norm_num` proves each `x0 < a`.
+  (def (mk-tocstr n)
+    (letrec ([(g i) @ if {i = 1} '(toCStr1 ,norm_num) '(toCStrS ,(g {i - 1}) ,norm_num)])
+    (g n)))
+  -- full readCStr proof term (memory hypothesis must be named `hmem`).
+  (def (mkReadCStr fname) '(readCStrI ,(mk-tocstr (string-len fname)) hmem))
+};
+
+----------------------------------------------------------------------
+-- open: a failing open returns `-errno` directly (open-ENOENT), a successful
+-- one a good fd (open-ok).
+--
+-- `execOpen` has NO `isIOError` branch: `ret e. u64` already admits any errno,
+-- so `-ENOENT` is a legal `execOpen` return with no separate error case. The
+-- filename is a CONCRETE string, parsed from the null-terminated bytes the
+-- harness lays out (via `mkReadCStr`, proving the model's `readCStr` really
+-- decodes it). `RSI = O_RDONLY = 0` selects the read-only flag disjunct,
+-- `RDX = 0` is the (unused) mode argument. Routes through the shared
+-- `execIO_errno` (Open disjunct, config unchanged = `setException k 0`).
+--   readCStr_open   transport the filename read to the cleared config + RDI
+--   open_step       the execOpen step (any `ret e. u64`)
+----------------------------------------------------------------------
+theorem readCStr_open (k filename: nat)
+  (hfn: $ readCStr k (readReg k RDI) filename $):
+  $ readCStr (setException k 0) (readReg (setException k 0) RDI) filename $ =
+(named '(eximi (anim2 @ rsyl readMem_setException @
+  bi1i (readMemeq2 @ eqcom readReg_setException)) hfn));
+
+-- `execOpen` has no `isIOError` branch -- it returns whatever `ret` is (a fd on
+-- success, `-errno` on failure), asking only `ret e. u64`. So one `open_step`
+-- serves both: the errno test passes the errno (u64 via `isIOErrorT`), the success
+-- test an existentially-quantified good fd (u64 directly).
+theorem open_step (k filename ret: nat)
+  (hK: $ k e. Config $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_open)) $)
+  (hfn: $ readCStr k (readReg k RDI) filename $)
+  (hrsi: $ readReg k RSI = ,(eval '(O_RDONLY)) $)
+  (hrdx: $ readReg k RDX = ,0 $)
+  (hu64: $ ret e. u64 $):
+  $ execOpen (setException k 0) ret $ =
+(focus
+  '(iani (iani (setExceptionT @ iani hK opt0) (eqtr readReg_setException @ eqtr4 hrax dec2)) @
+    iexie @ iexde @ mpbiri (iani (iani (iani (iani (readCStr_open hfn) eqid) _) _) _) ,eqtac)
+  '(eqtr readReg_setException @ eqtr4 hrdx dec0)
+  '(orl @ eqtr4 (eqtr readReg_setException hrsi) dec0)
+  'hu64);
+
+-- The whole `execIO` step for an open (the Open disjunct): config unchanged,
+-- RAX = ret. Routes through the shared `execIO_errno`.
+theorem execIO_openStep (i o k m filename ret: nat)
+  (hK: $ k e. Config $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_open)) $)
+  (hfn: $ readCStr k (readReg k RDI) filename $)
+  (hrsi: $ readReg k RSI = ,(eval '(O_RDONLY)) $)
+  (hrdx: $ readReg k RDX = ,0 $)
+  (hu64: $ ret e. u64 $):
+  $ execIO (mkKS i o k m) (mkKS i o (setReg (setException k 0) RAX ret) m) $ =
+(named @ focus
+  '(execIO_errno hex (orl @ orl @ orl @ orl @
+    iani (iani (open_step hK hrax hfn hrsi hrdx hu64) eqid) eqid)));
+
+-- The concrete `readCStr` proofs for the two open paths, generated by
+-- `mkReadCStr`. The memory hypothesis (the null-terminated filename bytes the
+-- harness lays out) must be named `hmem`.
+theorem readCStr_nope (k a: nat) (hmem: $ readMem k a ,"/_nope_\x00" $):
+  $ readCStr k a ,"/_nope_" $ = ,(mkReadCStr ,"/_nope_");
+theorem readCStr_slash (k a: nat) (hmem: $ readMem k a ,"/\x00" $):
+  $ readCStr k a ,"/" $ = ,(mkReadCStr ,"/");
+
+pub theorem test_open_enoent {k2 m2: nat} (i o k m: nat)
+  (_hi: $ i e. List u8 $) (_ho: $ o e. List u8 $)
+  (hk: $ k e. Config $) (_hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_open)) $)
+  (hmem: $ readMem k (readReg k RDI) ,"/_nope_\x00" $)
+  (hrsi: $ readReg k RSI = ,(eval '(O_RDONLY)) $)
+  (hrdx: $ readReg k RDX = ,0 $):
+  $ E. k2 E. m2 (execIO (mkKS i o k m) (mkKS i o k2 m2) /\ readReg k2 RAX = ,ENOENT) $ =
+'(iexie @ iexde @ mpbiri (iani
+    (execIO_openStep hk hex hrax (readCStr_nope hmem) hrsi hrdx
+      (isIOErrorT ,(isIOErr ENOENT))) read_setReg) ,eqtac);
+
+-- open success: `open("/", O_RDONLY, 0)` returns a good fd (`/` opens as a
+-- directory). The kernel's fd is nondeterministic, so the postcondition EXISTS a
+-- good fd (`~isIOError`), rather than pinning a value; the proof witnesses a
+-- concrete good fd (`,3`) and the harness confirms the real return is valid.
+pub theorem test_open_ok {k2 m2 ret: nat} (i o k m: nat)
+  (_hi: $ i e. List u8 $) (_ho: $ o e. List u8 $)
+  (hk: $ k e. Config $) (_hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_open)) $)
+  (hmem: $ readMem k (readReg k RDI) ,"/\x00" $)
+  (hrsi: $ readReg k RSI = ,(eval '(O_RDONLY)) $)
+  (hrdx: $ readReg k RDX = ,0 $):
+  $ E. k2 E. m2 E. ret (execIO (mkKS i o k m) (mkKS i o k2 m2) /\
+      readReg k2 RAX = ret /\ ~isIOError ret) $ =
+(focus
+  (have 'hu64 $ ,3 e. u64 $ ,(to-elBits 64 (->hex 0x3)))
+  '(iexie @ iexde @ iexde @ mpbiri (iani (iani
+      (execIO_openStep hk hex hrax (readCStr_slash hmem) hrsi hrdx hu64) read_setReg)
+      (notIOError_count (ssel u8ss32 @ mpbir elu8 {,norm_num : $ ,3 < 16 * 16 $}))) ,eqtac));
+
+----------------------------------------------------------------------
+-- fstat: a failing fstat returns `-errno` (fstat-EBADF).
+--
+-- Unlike the config-preserving errno cases, `execFStat`'s error branch still
+-- WRITES a stat buffer: `E. kw (writeMem k (readReg k RSI) stat2 kw /\
+-- k2 = setException kw 0)`. So the result config is `setException kw 0`, not
+-- `setException k 0` -- `kw` is passed as `execIO_errno`'s `k2`. The written
+-- content `stat2` is kept abstract (the harness only checks RAX; the model may
+-- clobber the buffer on error, an over-approximation of real Linux, which
+-- doesn't). The input `stat` buffer must be readable, and `writeMem` is
+-- provided as a hypothesis (like read). Routes through the shared `execIO_errno`
+-- (FStat disjunct).
+--   fstat_err        the execFStat step (k2 = setException kw 0)
+----------------------------------------------------------------------
+theorem fstat_err (k stat stat2 ret kw: nat)
+  (hrax: $ readReg k RAX = ,(eval '(sys_fstat)) $)
+  (hstat: $ readMem k (readReg k RSI) stat $)
+  (hstatA: $ stat e. Stat $)
+  (hstat2A: $ stat2 e. Stat $)
+  (hwrite: $ writeMem (setException k 0) (readReg k RSI) stat2 kw $)
+  (hret: $ isIOError ret $):
+  $ execFStat (setException k 0) (setException kw 0) ret $ =
+(focus
+  '(iani (eqtr readReg_setException @ eqtr4 hrax dec5) @ iexie @ iexde @ iexde @
+    mpbiri (iani (iani (iani (iani eqid _) hstatA) hstat2A) (orl @ iani hret _)) ,eqtac)
+  '(mpbi (readMemeq2 @ eqcom readReg_setException) @ readMem_setException hstat)
+  '(iexie @ mpbiri (iani (mpbi (writeMemeq2 @ eqcom readReg_setException) hwrite) eqid) ,eqtac));
+
+-- The whole `execIO` step for a failing fstat (the FStat disjunct): the result
+-- config is `setException kw 0` (the buffer-write result), RAX = ret. Routes
+-- through the shared `execIO_errno` with `k2 = setException kw 0`.
+theorem execIO_fstatErr (i o k m stat stat2 ret kw: nat)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_fstat)) $)
+  (hstat: $ readMem k (readReg k RSI) stat $)
+  (hstatA: $ stat e. Stat $)
+  (hstat2A: $ stat2 e. Stat $)
+  (hwrite: $ writeMem (setException k 0) (readReg k RSI) stat2 kw $)
+  (hret: $ isIOError ret $):
+  $ execIO (mkKS i o k m) (mkKS i o (setReg (setException kw 0) RAX ret) m) $ =
+(named
+  '(execIO_errno hex @ orl @ orr @ iani (fstat_err hrax hstat hstatA hstat2A hwrite hret) eqid));
+
+pub theorem test_fstat_ebadf {k2 m2: nat} (i o k m stat stat2 kw: nat)
+  (_hi: $ i e. List u8 $) (_ho: $ o e. List u8 $)
+  (_hk: $ k e. Config $) (_hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_fstat)) $)
+  (_hrdi: $ readReg k RDI = ,{{2 ^ 64} - 1} $)
+  (hstat: $ readMem k (readReg k RSI) stat $)
+  (hstatA: $ stat e. Stat $)
+  (hstat2A: $ stat2 e. Stat $)
+  (hwrite: $ writeMem (setException k 0) (readReg k RSI) stat2 kw $):
+  $ E. k2 E. m2 (execIO (mkKS i o k m) (mkKS i o k2 m2) /\ readReg k2 RAX = ,EBADF) $ =
+'(iexie @ iexde @ mpbiri (iani
+    (execIO_fstatErr hex hrax hstat hstatA hstat2A hwrite ,(isIOErr EBADF)) read_setReg) ,eqtac);
+
+----------------------------------------------------------------------
+-- fstat success: `fstat(0, &buf)` on a valid fd returns 0 and writes the stat
+-- buffer (the success branch of `execFStat`: `ret = 0 /\ writeMem … k2 /\
+-- readException k2 = 0`). The written content `stat2` is abstract; the observable
+-- is RAX = 0 (deterministic, unlike an mmap address or an open fd). The model is
+-- demonic -- it permits both this success and the `-EBADF` error for the same fd
+-- -- so a positive `ret = 0` successor pins that success is allowed.
+--   fstat_ok        the execFStat success step (k2 = kw, the write result)
+----------------------------------------------------------------------
+theorem fstat_ok (k stat stat2 kw: nat)
+  (hrax: $ readReg k RAX = ,(eval '(sys_fstat)) $)
+  (hstat: $ readMem k (readReg k RSI) stat $)
+  (hstatA: $ stat e. Stat $)
+  (hstat2A: $ stat2 e. Stat $)
+  (hwrite: $ writeMem (setException k 0) (readReg k RSI) stat2 kw $)
+  (hkw: $ readException kw = 0 $):
+  $ execFStat (setException k 0) kw ,0 $ =
+(named @ focus
+  '(iani (eqtr readReg_setException @ eqtr4 hrax dec5) @ iexie @ iexde @ iexde @
+    mpbiri (iani (iani (iani (iani eqid _) hstatA) hstat2A) _) ,eqtac)
+  '(mpbi (readMemeq2 @ eqcom readReg_setException) @ readMem_setException hstat)
+  '(orr @ iani (notIOError_count (ssel u8ss32 @ mpbir elu8 {,norm_num : $ ,0 < 16 * 16 $})) @
+    iani (iani (eqcom dec0) @ mpbi (writeMemeq2 @ eqcom readReg_setException) hwrite) hkw));
+
+-- The whole `execIO` step for a successful fstat (the FStat disjunct): config is
+-- `kw` (the buffer-write result), RAX = 0. Routes through the shared `execIO_errno`.
+theorem execIO_fstatOk (i o k m stat stat2 kw: nat)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_fstat)) $)
+  (hstat: $ readMem k (readReg k RSI) stat $)
+  (hstatA: $ stat e. Stat $)
+  (hstat2A: $ stat2 e. Stat $)
+  (hwrite: $ writeMem (setException k 0) (readReg k RSI) stat2 kw $)
+  (hkw: $ readException kw = 0 $):
+  $ execIO (mkKS i o k m) (mkKS i o (setReg kw RAX ,0) m) $ =
+(named '(execIO_errno hex (orl @ orr @ iani (fstat_ok hrax hstat hstatA hstat2A hwrite hkw) eqid)));
+
+pub theorem test_fstat_ok {k2 m2: nat} (i o k m stat stat2 kw: nat)
+  (_hi: $ i e. List u8 $) (_ho: $ o e. List u8 $)
+  (_hk: $ k e. Config $) (_hm: $ m e. PageMapping (getMemory k) $)
+  (hex: $ readException k = suc exSysCall $)
+  (hrax: $ readReg k RAX = ,(eval '(sys_fstat)) $)
+  (_hrdi: $ readReg k RDI = ,0 $)
+  (hstat: $ readMem k (readReg k RSI) stat $)
+  (hstatA: $ stat e. Stat $)
+  (hstat2A: $ stat2 e. Stat $)
+  (hwrite: $ writeMem (setException k 0) (readReg k RSI) stat2 kw $)
+  (hkw: $ readException kw = 0 $):
+  $ E. k2 E. m2 (execIO (mkKS i o k m) (mkKS i o k2 m2) /\ readReg k2 RAX = ,0) $ =
+'(iexie @ iexde @ mpbiri (iani
+    (execIO_fstatOk hex hrax hstat hstatA hstat2A hwrite hkw) read_setReg) ,eqtac);

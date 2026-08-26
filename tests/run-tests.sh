@@ -73,4 +73,9 @@ TERSE=1 ./run.sh || exit_code=1
 echo
 cd ..
 
+cd spec-x86/os
+TERSE=1 ./run.sh || exit_code=1
+echo
+cd ../..
+
 exit $exit_code

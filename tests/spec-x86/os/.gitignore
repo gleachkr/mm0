@@ -1,0 +1,6 @@
+harness
+*.mmb
+__pycache__
+# Generated from manifest.py by gen.py, on the fly by run.sh -- never committed.
+os_tests.mm0
+gen/

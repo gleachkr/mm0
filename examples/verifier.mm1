@@ -35,8 +35,7 @@ def Represents (env a_sorts a_terms a_thms: nat) = $ T. $;
 do {
   -- Import some constants from MM1
   (mmc-add @ map (fn (x) '(const {{,x : u64} := (pure ,x)}))
-    '(O_RDONLY O_WRONLY O_CREAT O_TRUNC
-      MAP_FAILED MAP_PRIVATE MAP_ANONYMOUS))
+    '(O_RDONLY O_WRONLY O_CREAT O_TRUNC MAP_PRIVATE MAP_ANONYMOUS))
 
   -- This is just a scratchpad for now, some thoughts on MMC syntax and primitives.
   (mmc-add '(

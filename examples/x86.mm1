@@ -661,7 +661,7 @@ do {
     [('(hex ,a1 ,x) '(h2n ,y))
       '(,(atom-app 'x op 'S1) ,(bitop-name op (dig x) (dig y)))]
     [('(h2n ,x) '(hex ,b1 ,y))
-      '(,(atom-app 'x op '1S) ,(bitop-name op (dig x) (dig y)))]
+      '(,(atom-app 'x op "1S") ,(bitop-name op (dig x) (dig y)))]
     [('(h2n ,x) '(h2n ,y)) '(,(bitop-name op (dig x) (dig y)))])
 };
 
@@ -3545,7 +3545,7 @@ pub theorem readMemX_T (k a l: nat):
 @_ def writeMemory1 (m a b m2 e .prot .b2: nat): wff =
 $ m e. Memory /\ a e. u64 /\ b e. u8 /\
   E. prot E. b2 (m @ a = prot, b2 /\
-  ifp (PROT_READ + PROT_WRITE C_ prot)
+  ifp (PROT_WRITE C_ prot)
     (m2 == write m a (prot, b) /\ e = 0)
     (m2 == m /\ e = suc exGPF)) $;
 theorem write_el_Memory
@@ -3574,7 +3574,7 @@ pub theorem writeMemory1T (m a b m2 e: nat):
 '(rsyl writeMemory1T_sn @ anim2 @ ssel @ mpbir optss @ mpbir snss exGPF_T);
 
 @_ local def setMem1 (m a b: nat): nat =
-$ if (PROT_READ + PROT_WRITE C_ fst (m @ a))
+$ if (PROT_WRITE C_ fst (m @ a))
     (lower (write m a (fst (m @ a), b)), 0)
     (m, suc exGPF) $;
 
@@ -4943,14 +4943,14 @@ pub theorem extendIfFD_T (tgt fd l l1 l2: nat):
 @(add-eval) def sys_read: nat = $ 0 $;
 @_ def execRead (l k l2 k2 ret .fd .buf .count .l1: nat): wff =
 $ l e. List u8 /\ readReg k RAX = sys_read /\
-  E. fd E. buf E. count (readReg k RDI = fd /\
+  E. fd E. buf E. count (fd = readRegSz k wSz32 RDI /\
     readMem k (readReg k RSI) buf /\ buf e. Array u8 count /\
     count = readReg k RDX /\
     ifp (isIOError ret)
       (l2 = l /\ k2 = k)
       (ret <= count /\ E. l1 (len l1 = ret /\
         extendIfFD stdin fd l l1 l2 /\
-        writeMem k (readReg k RSI) l1 k2))) $;
+        writeMem k (readReg k RSI) l1 k2 /\ readException k2 = 0))) $;
 theorem execReadT2 (l k l2 k2 ret: nat):
   $ execRead l k l2 k2 ret ->
     l e. List u8 /\ k e. Config /\
@@ -4965,11 +4965,11 @@ theorem execReadT2 (l k l2 k2 ret: nat):
     iand (mpbird (eleq1d @ anrd anrr) @ anwl h1) @
     iand (rsyl anrl isIOErrorT) @
     syl eqssr @ PageMappingeqd @ getMemoryeqd @ anrd anrr))
-  (focus '(syl5 anr @ impd @ exp @ eexda @ iand (rsyl anrl @ anwr @ anrd extendIfFD_T) @
-    iand (rsyl anrr @ anrd writeMemT) @
+  (focus '(syl5 anr @ impd @ exp @ eexda @ iand (rsyl (anwr anllr) @ anrd extendIfFD_T) @
+    iand (rsyl (anwr anlr) @ anrd writeMemT) @
     iand (sylc Bitsle1 anlr @ mpbird (eleq1d @ anrd anllr) @
       sylan readRegT (anwll h1) @ a1i RDX_T) @
-    rsyl anrr writeMemPM)));
+    rsyl (anwr anlr) writeMemPM)));
 pub theorem execReadT (l k l2 k2 ret: nat):
   $ execRead l k l2 k2 ret ->
     l e. List u8 /\ k e. Config /\
@@ -4979,12 +4979,17 @@ pub theorem execReadPM (l k l2 k2 ret: nat):
   $ execRead l k l2 k2 ret ->
     PageMapping (getMemory k) C_ PageMapping (getMemory k2) $ =
 '(anrd execReadT2);
+theorem execReadExc0 (l k l2 k2 ret: nat):
+  $ execRead l k l2 k2 ret -> readException k = 0 -> readException k2 = 0 $ =
+(named '(anwr @ eex @ eex @ eex @ anwr @ eor
+  (exp @ eqtrd (anwl @ readExceptioneqd anrr) anr)
+  (anwr @ anwr @ eex @ a1d anr)));
 
 @(add-eval) def sys_write: nat = $ 1 $;
 @_ def execWrite (l k l2 ret .fd .buf .count .l1: nat): wff =
 $ l e. List u8 /\ readReg k RAX = sys_write /\
   E. fd E. buf E. count (
-    fd = readReg k RDI /\ count = readReg k RDX /\
+    fd = readRegSz k wSz32 RDI /\ count = readReg k RDX /\
     readMem k (readReg k RSI) buf /\ buf e. Array u8 count /\
     ifp (isIOError ret) (l2 = l)
       (ret <= count /\ E. l1 (len l1 = ret /\
@@ -5005,17 +5010,27 @@ pub theorem execWriteT (l k l2 ret: nat):
 --| `struct stat` as laid out by the x86-64 Linux kernel: `0x90` = 144 bytes.
 @_ def Stat: set = $ Array u8 (9 * 16) $;
 @(add-eval) def sys_fstat: nat = $ 5 $;
-@_ def execFStat (k k2 ret .fd .stat .stat2: nat): wff =
+@_ def execFStat (k k2 ret .fd .stat .stat2 .kw: nat): wff =
 $ readReg k RAX = sys_fstat /\ E. fd E. stat E. stat2 (
-    fd = readReg k RDI /\ fd e. u32 /\
+    fd = readRegSz k wSz32 RDI /\
     readMem k (readReg k RSI) stat /\
     stat e. Stat /\ stat2 e. Stat /\
-    ret e. u64 /\ writeMem k (readReg k RSI) stat2 k2) $;
+    ifp (isIOError ret)
+      (E. kw (writeMem k (readReg k RSI) stat2 kw /\ k2 = setException kw 0))
+      (ret = 0 /\ writeMem k (readReg k RSI) stat2 k2 /\ readException k2 = 0)) $;
 theorem execFStatT2 (k k2 ret: nat):
   $ execFStat k k2 ret -> k2 e. Config /\ ret e. u64 /\
     PageMapping (getMemory k) C_ PageMapping (getMemory k2) $ =
-(named '(anwr @ eex @ eex @ eex @ iand
-  (iand (anwr @ anrd writeMemT) anlr) (anwr writeMemPM)));
+(named @ focus
+  '(anwr @ eex @ eex @ eex @ imp @ eord _ _)
+  (focus '(impd @ exp @ eexda @ iand (iand _ (rsyl anlr isIOErrorT)) _)
+    '(mpbird (eleq1d anrr) @
+      sylan setExceptionT (rsyl anrl @ anrd writeMemT) (a1i opt0))
+    '(mpbird (sseq2d @ PageMappingeqd @ syl6eq getMemory_setException @
+      getMemoryeqd anrr) @ rsyl anrl writeMemPM))
+  (focus '(syl5 anr @ a1i @ iand (iand _ _) (rsyl anlr writeMemPM))
+    '(rsyl anlr @ anrd writeMemT)
+    '(mpbiri elBits01 @ eleq1d anll)));
 
 pub theorem execFStatT (k k2 ret: nat):
   $ execFStat k k2 ret -> k2 e. Config /\ ret e. u64 $ =
@@ -5024,6 +5039,10 @@ pub theorem execFStatPM (k k2 ret: nat):
   $ execFStat k k2 ret ->
     PageMapping (getMemory k) C_ PageMapping (getMemory k2) $ =
 '(anrd execFStatT2);
+theorem execFStatExc0: $ execFStat k k2 ret -> readException k2 = 0 $ =
+(named @ focus
+  '(anwr @ eex @ eex @ eex @ anwr @ eor _ anrr)
+  '(anwr @ eex @ syl6eq read_setException @ readExceptioneqd anr));
 
 @_ def mapMemory1 (prot m a b: nat): nat =
 $ lower (write (fst m) a (prot, b)), lower (write (snd m) a (suc prot)) $;
@@ -5106,21 +5125,27 @@ pub theorem mapMemT (prot k km a l k2 km2: nat):
     sylan mapMemoryT (iand (iand an5l _) anllr) anlr)
   '(sylibr (elxabe ,eqtac) @ iand (anrd h) @ sylib ,pm an3lr));
 
+theorem mapMemExc: $ mapMem prot k km a l k2 km2 -> readException k2 = readException k $ =
+(named '(anwr @ eex @ eex @ eex @ eex @ eex @ eex @ eqtr4d
+  (syl6eq readException_mk @ readExceptioneqd anr)
+  (syl6eq readException_mk @ readExceptioneqd anll)));
+
 @(add-eval) def sys_mmap: nat = $ 9 $;
 @(add-eval) def MAP_PRIVATE: nat = $ 2 $;
 @(add-eval) def MAP_ANONYMOUS: nat = $ 32 $;
-@(add-eval) def MAP_FAILED: nat = $ bitsNeg 64 1 $;
-@_ def execMMap (k m k2 m2 ret .len .prot .flags .fd .off .buf .i: nat): wff =
+@_ def execMMap (k m k2 m2 ret .len .prot .flags .fd .off .pad .buf .i: nat): wff =
 $ k e. Config /\ m e. PageMapping (getMemory k) /\
   readReg k RAX = sys_mmap /\ E. len E. prot E. flags E. fd E. off (
     readReg k RDI = 0 /\ len = readReg k RSI /\
     prot = readReg k RDX /\ flags = readReg k 10 /\
-    fd = readReg k 8 /\ off = readReg k 9 /\
-    flags = MAP_PRIVATE + nat (fd = bitsNeg 32 1) * MAP_ANONYMOUS /\
+    fd = readRegSz k wSz32 8 /\ off = readReg k 9 /\
+    MAP_PRIVATE C_ flags /\ flags C_ MAP_PRIVATE + MAP_ANONYMOUS /\
+    (MAP_ANONYMOUS C_ flags -> fd = bitsNeg 32 1) /\
     prot e. Prot /\ off = 0 /\ ret e. u64 /\
-    ifp (isIOError ret) (k2 = k /\ m2 = m /\ ret = MAP_FAILED)
-      (E. buf (buf e. Array u8 len /\ (fd = bitsNeg 32 1 -> all (sn 0) buf) /\
-        A. i (i < len -> m @ (ret +_64 i) = 0) /\
+    ifp (isIOError ret) (k2 = k /\ m2 = m)
+      (E. pad E. buf (buf e. Array u8 (len + pad) /\
+        (MAP_ANONYMOUS C_ flags -> all (sn 0) buf) /\
+        A. i (i < len + pad -> m @ (ret +_64 i) = 0) /\
         mapMem prot k m ret buf k2 m2))) $;
 pub theorem execMMapT (k m k2 m2 ret: nat):
   $ execMMap k m k2 m2 ret ->
@@ -5130,54 +5155,78 @@ pub theorem execMMapT (k m k2 m2 ret: nat):
   '(sylibr (aneq1i anass) @ sylibr anass @ sylbi anass @ anim2a @ syl5 anr @
     eexd @ eexd @ eexd @ eexd @ eexda @ iand _ (anwr anlr))
   '(imp @ syl5 anr @ eorda (mpbird ,eqtac anl) @
-    rsyl anrr @ eex @ anwr @ rsyl mapMemT @ anim1 anr));
+    rsyl anrr @ eex @ eex @ anwr @ rsyl mapMemT @ anim1 anr));
+theorem execMMapExc0: $ execMMap k m k2 m2 ret -> readException k = 0 -> readException k2 = 0 $ =
+(named '(anwr @ eex @ eex @ eex @ eex @ eex @ anwr @ eor
+  (exp @ eqtrd (anwl @ readExceptioneqd anrl) anr)
+  (exp @ eqtrd (anwl @ anwr @ eex @ eex @ anwr mapMemExc) anr)));
 
-@_ def execIO (ks ks2 .i .o .k .m .ret .k2 .k3 .i2 .o2 .m2: nat): wff =
+--| Perform one IO/syscall step.
+@_ def execIO (ks ks2 .i .o .k .k1 .m .ret .k2 .k3 .i2 .o2 .m2: nat): wff =
 $ E. i E. o E. k E. m E. ret (ks = mkKS i o k m /\ readException k = suc exSysCall /\
-  E. k2 E. k3 (k3 = setException (setReg k2 RAX ret) 0 /\ (
-    execOpen k ret /\ k2 = k /\ ks2 = mkKS i o k3 m \/
-    E. i2 (execRead i k i2 k2 ret /\ ks2 = mkKS i2 o k3 m) \/
-    E. o2 (execWrite o k o2 ret /\ k2 = k /\ ks2 = mkKS i o2 k3 m) \/
-    execFStat k k2 ret /\ ks2 = mkKS i o k3 m \/
-    E. m2 (execMMap k m k2 m2 ret /\ ks2 = mkKS i o k3 m2)))) $;
+  E. k1 E. k2 E. k3 (k1 = setException k 0 /\ k3 = setReg k2 RAX ret /\ (
+    execOpen k1 ret /\ k2 = k1 /\ ks2 = mkKS i o k3 m \/
+    E. i2 (execRead i k1 i2 k2 ret /\ ks2 = mkKS i2 o k3 m) \/
+    E. o2 (execWrite o k1 o2 ret /\ k2 = k1 /\ ks2 = mkKS i o2 k3 m) \/
+    execFStat k1 k2 ret /\ ks2 = mkKS i o k3 m \/
+    E. m2 (execMMap k1 m k2 m2 ret /\ ks2 = mkKS i o k3 m2)))) $;
 pub theorem execIO_T (ks ks2: nat):
   $ ks e. KernelState /\ execIO ks ks2 -> ks2 e. KernelState $ =
 (named @ focus
-  '(imp @ !! eexd i @ eexd @ eexd @ eexd @ eexd @ impd @ expcom @ eexd @ eexd @
-    impd @ exp _)
+  '(imp @ !! eexd i @ eexd @ eexd @ eexd @ eexd @ impd @ expcom @
+    !! eexd k1 @ eexd @ eexd @ impd @ exp _)
   (have 'he $ _ -> k2 e. Config /\ ret e. u64 -> k3 e. Config $
-    '(exp @ mpbird (eleq1d anlr) @ anwr @
-      sylan setExceptionT (syl setRegT @ anim1 @ mpi RAX_T ian) @ a1i opt0))
+    '(exp @ mpbird (eleq1d @ anrd anlr) @ anwr @
+      syl setRegT @ anim1 @ mpi RAX_T ian))
   (have 'hs '(sylib mkKS_T @ mpbid (eleq1d an3l) anlr))
+  (have 'hm '(syl6eq getMem_setException @ getMemoryeqd anrl))
   (def (f a b c io d e)
     '(,a @ mpbird (eleq1d anrr) @ sylibr mkKS_T @ mpand (anwr ,b) @
       iand (iand ,io @ mpd (iand ,d @ anwr ,c) @ anwll he) @
       mpbird (eleq2d @ PageMappingeqd @
-        syl6eq setRegMem @ syl6eq getMem_setException @
-        getMemoryeqd anllr) ,e))
+        syl6eq setRegMem @ getMemoryeqd @ anrd anllr) ,e))
+  (def m_k1 '(mpbird (eleq2d @ PageMappingeqd @ anwll hm) @ anwll @ anrd hs))
+  (def gm_k2 '(eqtrd (getMemoryeqd @ syl anlr anlr) @ anwll hm))
   '(eord (eord (eord (eord _ _) _) _) _)
   -- Open
-  (f 'exp '(anwll execOpenT) 'anr '(anwll @ rsyl hs anll)
-    '(mpbird (eleq1d @ rsyl anlr anlr) anrl)
-    '(mpbird (eleq2d @ PageMappingeqd @ getMemoryeqd @ rsyl anlr anlr) @
-      anwll @ anrd hs))
+  (f 'exp '(anwll execOpenT) 'anr '(anwll @ syl anll hs)
+    '(mpbird (eleq1d @ syl anlr anlr) anrl)
+    '(mpbird (eleq2d @ PageMappingeqd ,gm_k2) @ anwll @ anrd hs))
   -- Read
   (f 'eexda '(anwl execReadT2) 'anlr
-    '(iand (anwr an3lr) @ anwll @ rsyl hs anllr)
+    '(iand (anwr an3lr) @ anwll @ syl anllr hs)
     '(anwr anllr)
-    '(sseld anrr @ anwll @ anrd hs))
+    '(sseld anrr ,m_k1))
   -- Write
   (f 'eexda '(anwll execWriteT) 'anr
-    '(iand (anwll @ rsyl hs an3l) @ anwr anlr)
-    '(mpbird (eleq1d @ rsyl anlr anlr) @ anwr anllr)
-    '(mpbird (eleq2d @ PageMappingeqd @ getMemoryeqd @ rsyl anlr anlr) @
-      anwll @ anrd hs))
+    '(iand (anwll @ syl an3l hs) @ anwr anlr)
+    '(mpbird (eleq1d @ syl anlr anlr) @ anwr anllr)
+    '(mpbird (eleq2d @ PageMappingeqd ,gm_k2) @ anwll @ anrd hs))
   -- FStat
-  (f 'exp '(anwl execFStatT2) 'anlr '(anwll @ rsyl hs anll)
-    '(anwr anll) '(sseld anrr @ anwll @ anrd hs))
+  (f 'exp '(anwl execFStatT2) 'anlr '(anwll @ syl anll hs) '(anwr anll) '(sseld anrr ,m_k1))
   -- MMap
-  (f 'eexda '(anwl execMMapT) 'anr '(anwll @ rsyl hs anll)
-    '(anwr anllr) '(anwr anlr)));
+  (f 'eexda '(anwl execMMapT) 'anr '(anwll @ syl anll hs) '(anwr anllr) '(anwr anlr)));
+
+--| A syscall step always leaves the machine in a normal (exception-cleared) state.
+pub theorem execIOExc0 (ks ks2: nat):
+  $ ks e. KernelState /\ execIO ks ks2 -> readException (ksCfg ks2) = 0 $ =
+(named @ focus
+  '(anwr @ eex @ eex @ eex @ eex @ eex @ anwr @ eex @ eex @ eex @ imp @
+    eord (eord (eord (eord _ _) _) _) _)
+  (def h1 '(syl6eq read_setException @ readExceptioneqd @ anwl anl))
+  (def (g pf)
+    '(mpbird (eqeq1d @ readExceptioneqd @ syl6eq ksCfg_mk @ ksCfgeqd anrr) @
+      eqtrd (syl6eq readException_setReg @ readExceptioneqd anlr) ,pf))
+  (focus -- Open: `k2 = k1`
+    '(exp ,(g '(eqtrd (readExceptioneqd @ anwr anlr) ,h1))))
+  (focus -- Read
+    '(eexda ,(g '(mpd ,h1 @ rsyl anrl execReadExc0))))
+  (focus -- Write: `k2 = k1`
+    '(eexda ,(g '(eqtrd (readExceptioneqd @ anwr anlr) ,h1))))
+  (focus -- FStat
+    '(exp ,(g '(rsyl anrl execFStatExc0))))
+  (focus -- MMap
+    '(eexda ,(g '(mpd ,h1 @ rsyl anrl execMMapExc0)))));
 
 theorem fin_execIO (ks: nat): $ finite {ks2 | execIO ks ks2} $ =
 (focus
@@ -5199,12 +5248,10 @@ theorem fin_execIO (ks: nat): $ finite {ks2 | execIO ks ks2} $ =
   (have 'h0 $ _ /\ len 0 e. u64 $ '(iani elList0 @ mpbir (eleq1 len0) elBits01))
   (have 'hi $ i2 = 0 -> i2 e. List u8 /\ len i2 e. u64 $ '(mpbiri h0 ,eqtac))
   (have 'ho $ o2 = 0 -> o2 e. List u8 /\ len o2 e. u64 $ '(mpbiri h0 ,eqtac))
-  (have 'hk $ k3 e. Config /\ ret e. u64 /\
-      k4 = setException (setReg k3 RAX ret) 0 -> k4 e. Config $
-    '(mpbird ,eqtac @ sylan setExceptionT
-      (sylan setRegT (iand (mpbird ,eqtac anll) @ a1i RAX_T) anlr) (a1i opt0)))
+  (have 'hk $ k3 e. Config /\ ret e. u64 /\ k4 = setReg k3 RAX ret -> k4 e. Config $
+    '(mpbird ,eqtac @ sylan setRegT (iand (mpbird ,eqtac anll) @ a1i RAX_T) anlr))
   (focus
-    '(imp @ !! eexd k3 @ !! eexda k4 @ sylbir anass @ imp @
+    '(imp @ !! eexd kc @ !! eexd k3 @ !! eexda k4 @ sylbir anass @ imp @
       eord (eord (eord (eord _ _) _) _) _)
     (def (split i o)
       '(iand (iand (iand (iand _ _)
@@ -5215,23 +5262,23 @@ theorem fin_execIO (ks: nat): $ finite {ks2 | execIO ks ks2} $ =
     (focus -- Open
       '(exp @ iexde @ iexde @ iexde @ iexde ,(split #f #f))
       '(orld @ mpbird ,eqtac @ anw4l @
-        sylan hk (rsyl anrl @ rsyl (anim1 execOpenT) @ iand (mpbird ,eqtac anll) anlr) anlr)
+        sylan hk (rsyl anrl @ rsyl (anim1 execOpenT) @ iand (mpbird ,eqtac anll) anlr) @ rsyl anlr anr)
       '(orrd anllr))
     (focus -- Read
       '(!! eexda i3 @ mpd (rsyl anrl
         {_ : $ _ -> E. i2 (i2 e. List u8 /\ len i2 e. u64 /\ i ++ i2 = i3) $}) _)
       (focus
         '(imp @ !! eexd fd @ !! eexd buf @ !! eexda count @ sylbir anass @ imp @ eorda _ _)
-        '(iexde @ iand (anwr hi) (syl6eq append02 @ appendeqd (eqcomd @ rsyl anlr anrl) ,eqtac))
+        '(iexde @ iand (anwr hi) (syl6eq append02 @ appendeqd (eqcomd @ syl anrl anlr) ,eqtac))
         '(sylbir anass @ sylbir anass @ imp @ !! eexda l1 @ casesda _ _)
-        '(iexde @ mpbird ,eqtac @ iand (iand (rsyl anllr @ rsyl anlr anlr) @
+        '(iexde @ mpbird ,eqtac @ iand (iand (rsyl anllr @ syl anlr anllr) @
             mpbird ,eqtac @ sylc Bitsle1 an3lr @ mpbird ,eqtac @
             sylan readRegT (rsyl an5lr @ rsyl anllr @ rsyl readMemT anll) @ a1i RDX_T) @
-          eqtr2d (rsyl anllr @ anrd anlr) @ syl ifpos anlr)
+          eqtr2d (rsyl anllr @ anrd anllr) @ syl ifpos anlr)
         '(iexde @ mpbird ,eqtac @ iand (a1i h0) @
-          eqtr2d (rsyl anllr @ anrd anlr) @ syl6eqr append02 @ syl ifneg anlr))
+          eqtr2d (rsyl anllr @ anrd anllr) @ syl6eqr append02 @ syl ifneg anlr))
       '(iexdde @ iexdde @ eximd @ iexdde @ exp ,(split #t #f))
-      '(orld @ mpbird ,eqtac @ anw4l @ sylan hk (rsyl anrl @ rsyl execReadT @ anim1 anr) anlr)
+      '(orld @ mpbird ,eqtac @ anw4l @ sylan hk (rsyl anrl @ rsyl execReadT @ anim1 anr) @ anrd anlr)
       '(orrd anllr))
     (focus -- Write
       '(!! eexda o3 @ mpd (anwr @ anwll
@@ -5245,22 +5292,21 @@ theorem fin_execIO (ks: nat): $ finite {ks2 | execIO ks ks2} $ =
             sylan readRegT (rsyl anllr @ anwr @ rsyl readMemT anll) @ a1i RDX_T) @
           eqtr2d (rsyl anllr @ anrd anlr) @ syl ifpos anlr)
         '(iexde @ mpbird ,eqtac @ iand (a1i h0) @
-          eqtr2d (rsyl anllr @ rsyl anlr anr) @ syl6eqr append02 @ syl ifneg anlr))
+          eqtr2d (rsyl anllr @ anrd anlr) @ syl6eqr append02 @ syl ifneg anlr))
       '(iexdde @ iexdde @ iexdde @ eximd @ exp ,(split #f #t))
       '(orld @ mpbird ,eqtac @ anw4l @
-        sylan hk (rsyl anrl @ rsyl (anim1 execWriteT) @ iand (mpbird ,eqtac an3lr) anlr) anlr)
+        sylan hk (rsyl anrl @ rsyl (anim1 execWriteT) @ iand (mpbird ,eqtac an3lr) anlr) @ anrd anlr)
       '(orrd anllr))
     (focus -- FStat
       '(exp @ iexde @ iexde @ iexde @ iexde ,(split #f #f))
-      '(orld @ mpbird ,eqtac @ anw4l @ sylan hk (rsyl anrl execFStatT) anlr)
+      '(orld @ mpbird ,eqtac @ anw4l @ sylan hk (rsyl anrl execFStatT) @ anrd anlr)
       '(orrd anllr))
     (focus -- MMap
       '(iexdde @ eximd @ exp @ iexde @ iexde ,(split #f #f))
-      '(orld @ mpbird ,eqtac @ anwll @ sylan hk (rsyl anrl @ rsyl execMMapT @ anim1 anlr) anllr)
+      '(orld @ mpbird ,eqtac @ anwll @ sylan hk (rsyl anrl @ rsyl execMMapT @ anim1 anlr) @ anrd anllr)
       '(orld @ mpbird (eleq2d @ PageMappingeqd @
-          syl6eq getMemory_setReg @ syl6eq getMemory_setException @
-          getMemoryeqd @ eqtrd an3lr an4lr) @
-        rsyl anllr @ anwl @ rsyl execMMapT anlr)))
+          syl6eq getMemory_setReg @ getMemoryeqd @ eqtrd an3lr @ anrd an4lr) @
+        rsyl anllr @ anwl @ syl anlr execMMapT)))
   (focus
     '(anwll @ eexd @ eexd @ eexd @ eexda @ iexde @ iand (mpbird (eleq1d anr) _) @
       eqtr4d (anwl anrr) @ mkKSeqd
@@ -5272,7 +5318,7 @@ theorem fin_execIO (ks: nat): $ finite {ks2 | execIO ks ks2} $ =
           (syl6eq pi22pr @ pi22eqd @ syl6eq sndpr @ sndeqd anr))
         (syl6eq pi11pr @ pi11eqd anr)
         (syl6eq pi12pr @ pi12eqd anr))
-    '(anwl @ mpbird (anwl @ syl5bb prelxp @ syl6bbr anass @ aneqd _ _) @ anrl)
+    '(anwl @ mpbird (anwl @ syl5bb prelxp @ syl6bbr anass @ aneqd _ _) anrl)
     '(syl5bb (elxab ,eqtac) @ aneqd
       (syl5bb elun @ oreq2d @ syl5bb elsn @ eqeq2d @ syl6eq ksCfg_mk ksCfgeq)
       (syl5bb elun @ oreq2d @ syl5bb elsn @ eqeq2d @ syl6eq ksMapping_mk ksMappingeq))
@@ -5280,23 +5326,35 @@ theorem fin_execIO (ks: nat): $ finite {ks2 | execIO ks ks2} $ =
     '(a1i @ bitr prelxp @ aneq ,h ,h)));
 
 @_ def sys_exit: nat = $ ch x3 xc $;
---| We consider protection faults as a valid way to exit with a nonzero exit code
---| (usually `0xD` or `0xE` but often reported as `0x8D` and `0x8E` by shells).
---| Only the low byte of `RDI` is observable to the parent process (`waitpid`
---| reports `RDI & 0xff`), so that is what counts as the exit code here: a program
---| exiting with `RDI = 256` reports success and must therefore satisfy the
+
+--| We consider protection faults (`#GP`/`#PF` -> `SIGSEGV`) and undefined
+--| instructions (`ud2`, i.e. `#UD` -> `SIGILL`) as valid ways to exit with a nonzero
+--| exit code: with no signal handler installed (signals are unmodeled) the process is
+--| killed by the signal, which the parent observes as a signal termination
+--| (`WIFSIGNALED`, e.g. `$? = 128 + signo`), never as a clean exit `0`.
+--|
+--| For a real `exit(rdi)`, only the low byte of `RDI` is observable to the parent
+--| (`waitpid` reports `RDI & 0xff`), so that is what counts as the exit code here: a
+--| program exiting with `RDI = 256` reports success and must therefore satisfy the
 --| postcondition.
 @_ def execExit (k ret: nat): wff =
 $ k e. Config /\ ret e. u32 /\ (
-    readException k = suc exGPF /\ ret != 0 \/
+    (readException k = suc exGPF \/ readException k = suc exUD) /\ ret != 0 \/
     readException k = suc exSysCall /\ readReg k RAX = sys_exit /\ ret = chop 8 (readReg k RDI)) $;
 pub theorem execExitT (k ret: nat):
   $ execExit k ret -> k e. Config /\ ret e. u32 $ = 'anl;
 
+theorem excFaultNeSysCall:
+  $ readException k = suc exGPF \/ readException k = suc exUD ->
+    readException k != suc exSysCall $ =
+'(eor
+  (mpi {,norm_num : $ suc 1 != suc 0 $} @ con3d eqtr3)
+  (mpi {,norm_num : $ suc 2 != suc 0 $} @ con3d eqtr3));
+
 theorem execExit_determ (k ret: nat):
   $ execExit k ret /\ execExit k 0 -> ret = 0 $ =
 '(impcom @ anwr @ eor (anwr @ absurdr eqid) @
-  syl5 anr @ eorda (syl (absurd d1ne0) @ sylib peano2 @ eqtr3d anrl an3l) @
+  syl5 anr @ eorda (mpd (rsyl anrl excFaultNeSysCall) @ anw3l absurdr) @
   eqtr4d anrr anlr);
 
 --| This is the composite step relation for the extended state.
@@ -5324,12 +5382,14 @@ theorem fin_ksStep (ks: nat): $ finite {ks2 | ksStep ks ks2} $ =
 theorem ksStep_no_exit: $ ksStep ks ks2 -> ~execExit (ksCfg ks) ret $ =
 (named @ focus
   '(anwr @ eor
-    (eex @ anwl @ rsyl anlr @ con2 @ anwr @ eor (anwl sucne0) (anwll sucne0))
+    (eex @ anwl @ rsyl anlr @ con2 @ anwr @ eor (anwl @ eor sucne0 sucne0) (anwll sucne0))
     (eex @ eex @ eex @ eex @ eex _))
   '(mpbird (noteqd @ execExiteq1d @ syl6eq ksCfg_mk @ ksCfgeqd anll) @
     syl inot @ syl5 anr @ eorda
-    (syl (absurd d1ne0) @ sylib peano2 @ eqtr3d anrl @ anwl anlr)
-    (imp @ syl5 anlr @ syl absurd @ anwr @ eex @ eex @ anwr _))
+    (mpd (anwl anlr) @ mpd (rsyl anrl excFaultNeSysCall) @ a1i absurd)
+    (imp @ syl5 anlr @ syl absurd @ anwr @ eex @ eex @ eex @
+      mpbird (noteqd @ eqeq1d @ eqcomd @ syl6eq readReg_setException @
+        readRegeq1d @ anwl anl) @ anwr _))
   (def (f x) '(mpi {,norm_num : $ ,x != ch x3 xc $} @ con3d eqtr3))
   '(eor (eor (eor (eor
     (rsyl an3lr ,(f $2$))
@@ -5731,7 +5791,7 @@ $ consBit (PROT_EXEC C_ prot) (
 @_ def pHeader (l type prot off vaddr filesz memsz .i: nat): wff =
 $ type e. u32 /\ prot e. Prot /\ off e. u64 /\ vaddr e. u64 /\
   filesz e. u64 /\ memsz e. u64 /\ filesz <= memsz /\
-  E. i (i < 64 /\ 2 ^ i || bitsSub 64 vaddr off /\
+  E. i (12 <= i /\ i < 64 /\ 2 ^ i || bitsSub 64 vaddr off /\
     l = u32Bytes type ++ u32Bytes (protToFlags prot) ++
         u64Bytes off ++ u64Bytes vaddr ++ u64Bytes 0 ++
         u64Bytes filesz ++ u64Bytes memsz ++ u64Bytes (2 ^ i)) $;
@@ -5765,43 +5825,56 @@ pub theorem BasicElfT (entry prot off seg: nat):
 '(iand (iand an4l @ sylc Bitsle1 anlr an5l) an3lr);
 
 --| This defines a basic ELF file (only one program segment, no sections)
---| and extracts the program segment and its protection and location.
-@_ def parseBasicElf (file entry prot vaddr seg: nat)
-  (.off .eh .ph .phoff .fseg .memsz: nat): wff =
+--| and extracts the file-backed part of the program segment (`seg`), the
+--| zero-filled BSS that follows it (`repeat 0 bss`, so the whole loaded image is
+--| `seg ++ repeat 0 bss`, of length `p_memsz`), and its protection and location.
+--|
+--| For a writable segment, `seg` is exactly the `p_filesz` bytes declared in
+--| the program header. For a non-writable segment it may nondeterministically
+--| extend past `p_filesz` (capped at `memsz`) into the bytes the head page of
+--| the BSS really holds: the following file bytes, then zeros past end of
+--| file (the partial page beyond EOF reads as zero). Linux zeroes the head of
+--| the BSS (the part sharing a page with the file data) by user-space writes,
+--| and when the segment is not writable this fails and is silently ignored,
+--| leaving that page content mapped there (`fs/binfmt_elf.c`, `padzero`).
+@_ def parseBasicElf (file entry prot vaddr seg bss: nat)
+  (.off .eh .ph .phoff .filesz .memsz .pad: nat): wff =
 $ file e. List u8 /\
-  E. eh E. ph E. phoff E. off E. fseg E. memsz (
+  E. eh E. ph E. phoff E. off E. filesz E. memsz E. pad (
     sublistAt 0 file eh /\ elfHeader eh entry phoff 0 1 0 /\
     sublistAt phoff file ph /\
-    pHeader ph PT_LOAD prot off vaddr (len fseg) memsz /\
-    sublistAt off file fseg /\
+    pHeader ph PT_LOAD prot off vaddr filesz memsz /\
+    sublistAt off (file ++ repeat 0 pad) seg /\
+    off + filesz <= len file /\
+    filesz <= len seg /\ len seg <= memsz /\
+    (PROT_WRITE C_ prot -> len seg = filesz) /\
     vaddr + memsz e. u64 /\ vaddr <= entry /\ entry < vaddr + memsz /\
-    seg = fseg ++ repeat 0 (memsz - len fseg)) $;
-pub theorem parseBasicElfT (file entry prot vaddr seg: nat):
-  $ parseBasicElf file entry prot vaddr seg -> file e. List u8 /\
-    basicElf entry prot vaddr seg $ =
-(named @ focus
+    bss = memsz - len seg) $;
+pub theorem parseBasicElfT (file entry prot vaddr seg bss: nat):
+  $ parseBasicElf file entry prot vaddr seg bss -> file e. List u8 /\
+    basicElf entry prot vaddr (seg ++ repeat 0 bss) $ =
+(focus
   '(anim2a @ !! eexd eh @ !! eexd ph @ !! eexd phoff @ !! eexd off @
-    !! eexd fseg @ !! eexd memsz @ impd @ exp @ syl5ibrcom basicElfeq4 @
-    sylbi (aneq2i @ bian11i anass) @ rsyl ancom _)
-  (have 'h1 '(rsyl an5lr elfHeaderT))
-  (have 'h2 '(rsyl an3lr pHeaderT))
-  (have 'h3 '(syl5eq appendlen @ syl5eq (addeq2 repeatlen) @ syl pncan3 @ rsyl an3lr anlr))
-  '(iand (iand (iand (iand _ _) _) _) _)
+    !! eexd filesz @ !! eexd memsz @ !! eexd pad @ impd @ exp @ syl5ibrcom ,eqtac _)
+  (have 'h1 '(syl elfHeaderT @ anwr @ anw4l an6lr))
+  (have 'h2 '(syl pHeaderT @ anwr @ anwll an6lr))
+  (have 'h3 '(syl5eq appendlen @ syl5eq (addeq2 repeatlen) @ syl pncan3 @ anwr an4lr))
+  '(iand (iand (iand (iand _ _) _) (anwr anlr)) _)
   (focus '(iand (syl an4lr h1) (syl an4lr h2)))
   (focus
-    '(sylibr appendT @ iand (sylc sublistAtT anllr anr) @
-      a1i @ repeatT elBits01))
-  (focus '(mpbird (eleq1d @ addeq2d h3) @ rsyl anlr anll))
-  (focus '(rsyl anlr anlr))
-  (focus '(mpbird (lteq2d @ addeq2d h3) @ rsyl anlr anr)));
+    (def bssT '(a1i @ repeatT elBits01))
+    '(sylibr appendT @ iand
+      (sylc sublistAtT (anwr @ anwl an6lr) @ sylibr appendT @ iand anl ,bssT) ,bssT))
+  (focus '(mpbird (eleq1d @ addeq2d h3) @ anwr anllr))
+  (focus '(mpbird (lteq2d @ addeq2d h3) anrr)));
 
 --| `isBasicElf elf` means that `elf` is a string that satisfies the
 --| ELF specification.
-def isBasicElf (elf: string) (.entry .prot .off .seg: nat): wff =
-$ E. entry E. prot E. off E. seg parseBasicElf elf entry prot off seg $;
+def isBasicElf (elf: string) (.entry .prot .off .seg .bss: nat): wff =
+$ E. entry E. prot E. off E. seg E. bss parseBasicElf elf entry prot off seg bss $;
 
 local def isBasicElfN (elf: nat): wff =
-$ E. entry E. prot E. off E. seg parseBasicElf elf entry prot off seg $;
+$ E. entry E. prot E. off E. seg E. bss parseBasicElf elf entry prot off seg bss $;
 theorem isBasicElfN_iff:
   $ isBasicElf elf <-> isBasicElfN elf $ = (named 'biid);
 
@@ -5835,24 +5908,29 @@ pub theorem allocStackT (k m k3 km3: nat):
     (eex @ anwr @ rsyl mapMemT @ anim1 anr)));
 
 --| This defines the initial state set up from a basic ELF file (only one
---| program segment, no sections).
+--| program segment, no sections). The file-backed part of the segment is
+--| mapped at the protection requested in the program header; the BSS is
+--| mapped writable regardless (Linux creates it via `vm_brk_flags`, which
+--| always includes `R+W` on top of the requested protection).
 def initialConfig (elf: string) (ks: nat)
-  (.entry .prot .off .seg .k0 .k1 .km1 .k2 .km2 .a: nat): wff =
-$ E. entry E. prot E. off E. seg E. k0 E. k1 E. km1 E. k2 E. km2 (
-    parseBasicElf elf entry prot off seg /\
+  (.entry .prot .off .seg .bss .k0 .k1 .km1 .k2 .km2 .k3 .km3 .a: nat): wff =
+$ E. entry E. prot E. off E. seg E. bss E. k0 E. k1 E. km1 E. k2 E. km2 E. k3 E. km3 (
+    parseBasicElf elf entry prot off seg bss /\
     blankConfig entry k0 /\ allocStack k0 (\. a e. u64, 0) k1 km1 /\
     mapMem prot k1 km1 off seg k2 km2 /\
-    ks = mkKS 0 0 k2 km2) $;
+    mapMem (bitOr (PROT_READ + PROT_WRITE) prot) k2 km2 (off + len seg) (repeat 0 bss) k3 km3 /\
+    ks = mkKS 0 0 k3 km3) $;
 
 @_ local def initialConfigN (elf ks: nat): wff =
-$ E. entry E. prot E. off E. seg E. k0 E. k1 E. km1 E. k2 E. km2 (
-    parseBasicElf elf entry prot off seg /\
+$ E. entry E. prot E. off E. seg E. bss E. k0 E. k1 E. km1 E. k2 E. km2 E. k3 E. km3 (
+    parseBasicElf elf entry prot off seg bss /\
     blankConfig entry k0 /\ allocStack k0 (\. a e. u64, 0) k1 km1 /\
     mapMem prot k1 km1 off seg k2 km2 /\
-    ks = mkKS 0 0 k2 km2) $;
+    mapMem (bitOr (PROT_READ + PROT_WRITE) prot) k2 km2 (off + len seg) (repeat 0 bss) k3 km3 /\
+    ks = mkKS 0 0 k3 km3) $;
 theorem initialConfigNT:
   $ initialConfigN elf ks -> ks e. KernelState $ =
-(named '(eex @ eex @ eex @ eex @ eex @ eex @ eex @ eex @ eex @
+(named '(eex @ eex @ eex @ eex @ eex @ eex @ eex @ eex @ eex @ eex @ eex @ eex @
   imp @ syl5ibrcom ,eqtac @ sylibr mkKS_T @ sylibr anass @
   anim (a1i @ ian elList0 elList0) @ rsyl mapMemT @ anim1 anr));
 theorem initialConfigN_iff:

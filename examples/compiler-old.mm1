@@ -724,16 +724,16 @@ theorem s_mem1_hoareCfg
   (h1: $ G -> v e. u8 $)
   (h2: $ G -> setMem1 (getMemory k) a v = m2, 0 $):
   $ G -> hoareCfg k (sn (setMemory k m2)) (s_mem1 p a w)
-    (^s (PROT_READ + PROT_WRITE C_ p) /\s s_mem1 p a v) $ =
+    (^s (PROT_WRITE C_ p) /\s s_mem1 p a v) $ =
 (named @ focus
   (def G $ G /\ k = ksCfg ks /\ ks |=s s_mem1 p a w $)
   (have 'H1 $ ,G -> a e. u64 /\ w e. u8 /\ p e. Prot $
     '(anld @ sylib s_sat_anlift1 anr))
   (have 'H1a $ ,G -> a e. u64 $ '(rsyl H1 anll))
-  (have 'H2 $ ,G -> PROT_READ + PROT_WRITE C_ fst (getMemory k @ a) $
+  (have 'H2 $ ,G -> PROT_WRITE C_ fst (getMemory k @ a) $
     '(anwll @ mpi peano1 @ con1d @ exp @ anrd @
       sylib prth @ eqtr3d (anwr ifneg) (anwl h2)))
-  (have 'H3 $ ,G -> PROT_READ + PROT_WRITE C_ p $
+  (have 'H3 $ ,G -> PROT_WRITE C_ p $
     '(mpbid (sseq2d @ nseqd @ syl6eq fstpr @ fsteqd @
         eqtrd (appneq1d @ getMemoryeqd anlr) @ anwr @ anld s_mem1_getMemory) H2))
   (have 'H4 $ ,G -> ksCfg ks e. Config $ '(syl ksCfgT @ anwr s_sat_ks))
@@ -780,7 +780,7 @@ theorem s_mem1_hoareCfg2
   (h2: $ G -> setMem1 (getMemory k) a v = m2, e $):
   $ G -> hoareCfg k (sn (setMemory k m2)) (s_mem1 p a w)
     (^s (e = suc exGPF) /\s s_mem1 p a w \/s
-     ^s (PROT_READ + PROT_WRITE C_ p) /\s s_mem1 p a v) $ =
+     ^s (PROT_WRITE C_ p) /\s s_mem1 p a v) $ =
 '(casesda (syl (hoareCfg_weakr @ ss_s_weak s_orr) @
     s_mem1_hoareCfg (anwl h1) @ eqtrd (anwl h2) @ preq2d anr) @
   mpd (imp @ con3d @ exp @ anrd @ sylib prth @ eqtr3d (anwl h2) @ anwr ifpos) @
@@ -883,7 +883,7 @@ theorem s_mem_readMemory {y} (G: wff x)
 theorem hoareCfg_setMem {p x}
   (h1: $ G -> v e. List u8 $)
   (h2: $ G -> len w = len v $)
-  (h3: $ G /\ PROT_READ + PROT_WRITE C_ p -> x, p e. P -> x, p e. Q $)
+  (h3: $ G /\ PROT_WRITE C_ p -> x, p e. P -> x, p e. Q $)
   (h4: $ G -> setMem (getMemory k) a v = m2, e $):
   $ G -> hoareCfg k (sn (setMemory k m2)) (s_mem P a w)
     (^s (e = suc exGPF) \/s ^s (e = 0) /\s s_mem Q a v) $ =
@@ -941,7 +941,7 @@ theorem hoareCfg_setMem {p x}
 theorem hoareCfg_writeMem {p x}
   (h1: $ G -> v e. List u8 $)
   (h2: $ G -> len w = len v $)
-  (h3: $ G /\ PROT_READ + PROT_WRITE C_ p -> x, p e. P -> x, p e. Q $):
+  (h3: $ G /\ PROT_WRITE C_ p -> x, p e. P -> x, p e. Q $):
   $ G -> hoareCfg k {k2 | writeMem k a v k2}
     (s_OK *s s_mem P a w)
     (s_ERR \/s s_OK *s s_mem Q a v) $ =
@@ -1371,7 +1371,7 @@ theorem hoareCfg_writeEA_m {x p}
   (hl1: $ G -> len l1 = nb $)
   (hl2: $ G -> l2 = toBytes nb w $)
   (hw: $ G -> chop n v = w $)
-  (hp: $ G /\ PROT_READ + PROT_WRITE C_ p -> x, p e. P -> x, p e. Q $):
+  (hp: $ G /\ PROT_WRITE C_ p -> x, p e. P -> x, p e. Q $):
   $ G -> hoareCfg k {k2 | writeEA k sz (EA_m a) v k2}
     (s_OK *s s_mem P a l1)
     (s_ERR \/s s_OK *s s_mem Q a l2) $ =

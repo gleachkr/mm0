@@ -155,7 +155,7 @@ theorem basic_pHeader_ok
     '(ssel u8ss64 ,h1) 'load_start_T '(Bitsle1 hle hms2) 'hms2 'hle)
   (have 'hM '(eqtr3 load_start_eq2 @ addeq load_start_pow2 @ eqcom c2nhex))
   '(ax_mp (iexe ,eqtac) @ ian
-    (ian _ @ mpbir (dvdeq2 @
+    (ian (ian _ _) @ mpbir (dvdeq2 @
       eqtr (bitsSub_eq_sub (mpbir (leeq2 hM) leaddid2) load_start_T) @
       eqtr (subeq1 hM) pncan) @ powdvd _)
     (s2n_A (_ch32_eq _x01_eq) @
@@ -163,6 +163,7 @@ theorem basic_pHeader_ok
       s2n_A (_ch64_eq eqid) @ s2n_A load_start_eq @
       s2n_A (eqtr4 (eqtr _x00x8_eq @ repeateq2 h2n8) toBytes02) @
       s2n_A hfs @ s2n_A hms PAGE_SIZE_eq))
+  norm_num
   norm_num
   norm_num);
 
@@ -173,11 +174,11 @@ local def ELF_parse (bss: nat) (c: string): nat =
 $ text_start, PROT_RWX, text_start, c ++ repeat 0 bss $;
 
 local def ELF_lit_ok (elf: string) (bss: nat) (c: string) =
-$ parseBasicElf elf text_start PROT_RWX text_start (c ++ repeat 0 bss) $;
+$ parseBasicElf elf text_start PROT_RWX text_start c bss $;
 
 theorem ELF_lit_ok_isBasicElf (s bss c)
   (h: $ ELF_lit_ok s bss c $): $ isBasicElf s $ =
-'(iexie @ iexde @ iexde @ iexde @ mpbiri h ,eqtac);
+'(iexie @ iexde @ iexde @ iexde @ iexde @ mpbiri h ,eqtac);
 
 theorem basicElf_ok
   (hfs: $ fs = u64Bytes filesz $)
@@ -189,7 +190,7 @@ theorem basicElf_ok
   (hbd: $ end e. u64 $):
   $ ELF_lit_ok (ELF_lit fs ms c) bss c $ =
 (focus
-  '(ian s2nT @ iexie ,(iterate 5 (fn (x) '(iexde ,x)) '(mpbiri _ ,eqtac)))
+  '(ian s2nT @ iexie ,(iterate 6 (fn (x) '(iexde ,x)) '(mpbiri _ ,eqtac)))
   (have 'h1 '(eqtr s2nsadd @ appendeq2 s2nsadd))
   (have 'hl1 '(elArraylen @ an5l @ elfHeaderT ELF_header_ok))
   (have 'phok '(basic_pHeader_ok
@@ -198,7 +199,11 @@ theorem basicElf_ok
     (mpbir (leeq1 hlen) leaddid1)
     (mpbir (eleq1 hbss) @ Bitsle1 (mpbi (leeq2 hend) leaddid2) hbd))) (swap)
   (have 'hl2 '(elArraylen @ an6l @ pHeaderT phok))
-  (for 0 8 @ fn (_) (refine '(ian _ _)))
+  (have 'hs $ sublistAt (ch x7 x8) (ELF_lit fs ms c) c $
+    '(mpbir (sublistAteq (eqtr2 (addeq hl1 @ eqtr add02 hl2)
+        {,norm_num : $ 64 + ch x3 x8 = ch x7 x8 $}) h1 eqid) @
+      sublistAt_right @ sublistAt_right sublistAt_id))
+  (for 0 12 @ fn (_) (refine '(ian _ _)))
   (focus
     '(mpbir (sublistAteq2 h1) @ sublistAt_left sublistAt_id))
   (focus 'ELF_header_ok)
@@ -206,16 +211,17 @@ theorem basicElf_ok
     '(mpbir (sublistAteq (eqtr2 add02 hl1) h1 eqid) _)
     '(sublistAt_right @ sublistAt_left sublistAt_id))
   (focus 'phok)
-  (focus
-    '(mpbir (sublistAteq (eqtr2 (addeq hl1 @ eqtr add02 hl2)
-        {,norm_num : $ 64 + ch x3 x8 = ch x7 x8 $}) h1 eqid) _)
-    '(sublistAt_right @ sublistAt_right sublistAt_id))
+  (focus '(! sublistAt_left _ _ $ repeat 0 0 $ _ hs))
+  (focus '(sublistAt_len_le hs))
+  (focus 'leid)
+  (focus '(mpbir (leeq1 hlen) leaddid1))
+  (focus 'eqidd)
   (focus '(mpbir (eleq1 @ eqtr (addeq2 hbss) hend) hbd))
   (focus 'leid)
   (focus
     '(mpbi (lteq1 add02) @ mpbi ltadd2 @ ltletr _ leaddid1)
     '(mpbi (lteq2 hlen) @ mpbir lt01 @ mtbir leneq0 hea))
-  (focus '(appendeq2 @ repeateq2 @ eqtr2 (subeq2 hlen) pncan2)));
+  (focus '(eqtr2 (subeq2 hlen) pncan2)));
 
 ------------
 -- Linker --

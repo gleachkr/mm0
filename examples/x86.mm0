@@ -842,7 +842,7 @@ theorem readMemX_T (k a l: nat):
 def writeMemory1 (m a b m2 e .prot .b2: nat): wff =
 $ m e. Memory /\ a e. u64 /\ b e. u8 /\
   E. prot E. b2 (m @ a = prot, b2 /\
-  ifp (PROT_READ + PROT_WRITE C_ prot)
+  ifp (PROT_WRITE C_ prot)
     (m2 == write m a (prot, b) /\ e = 0)
     (m2 == m /\ e = suc exGPF)) $;
 theorem writeMemory1T (m a b m2 e: nat):
@@ -1381,14 +1381,14 @@ theorem extendIfFD_T (tgt fd l l1 l2: nat):
 def sys_read: nat = $ 0 $;
 def execRead (l k l2 k2 ret .fd .buf .count .l1: nat): wff =
 $ l e. List u8 /\ readReg k RAX = sys_read /\
-  E. fd E. buf E. count (readReg k RDI = fd /\
+  E. fd E. buf E. count (fd = readRegSz k wSz32 RDI /\
     readMem k (readReg k RSI) buf /\ buf e. Array u8 count /\
     count = readReg k RDX /\
     ifp (isIOError ret)
       (l2 = l /\ k2 = k)
       (ret <= count /\ E. l1 (len l1 = ret /\
         extendIfFD stdin fd l l1 l2 /\
-        writeMem k (readReg k RSI) l1 k2))) $;
+        writeMem k (readReg k RSI) l1 k2 /\ readException k2 = 0))) $;
 theorem execReadT (l k l2 k2 ret: nat):
   $ execRead l k l2 k2 ret ->
     l e. List u8 /\ k e. Config /\
@@ -1401,7 +1401,7 @@ def sys_write: nat = $ 1 $;
 def execWrite (l k l2 ret .fd .buf .count .l1: nat): wff =
 $ l e. List u8 /\ readReg k RAX = sys_write /\
   E. fd E. buf E. count (
-    fd = readReg k RDI /\ count = readReg k RDX /\
+    fd = readRegSz k wSz32 RDI /\ count = readReg k RDX /\
     readMem k (readReg k RSI) buf /\ buf e. Array u8 count /\
     ifp (isIOError ret) (l2 = l)
       (ret <= count /\ E. l1 (len l1 = ret /\
@@ -1415,12 +1415,14 @@ theorem execWriteT (l k l2 ret: nat):
 --| `struct stat` as laid out by the x86-64 Linux kernel: `0x90` = 144 bytes.
 def Stat: set = $ Array u8 (9 * 16) $;
 def sys_fstat: nat = $ 5 $;
-def execFStat (k k2 ret .fd .stat .stat2: nat): wff =
+def execFStat (k k2 ret .fd .stat .stat2 .kw: nat): wff =
 $ readReg k RAX = sys_fstat /\ E. fd E. stat E. stat2 (
-    fd = readReg k RDI /\ fd e. u32 /\
+    fd = readRegSz k wSz32 RDI /\
     readMem k (readReg k RSI) stat /\
     stat e. Stat /\ stat2 e. Stat /\
-    ret e. u64 /\ writeMem k (readReg k RSI) stat2 k2) $;
+    ifp (isIOError ret)
+      (E. kw (writeMem k (readReg k RSI) stat2 kw /\ k2 = setException kw 0))
+      (ret = 0 /\ writeMem k (readReg k RSI) stat2 k2 /\ readException k2 = 0)) $;
 theorem execFStatT (k k2 ret: nat):
   $ execFStat k k2 ret -> k2 e. Config /\ ret e. u64 $;
 theorem execFStatPM (k k2 ret: nat):
@@ -1459,45 +1461,54 @@ theorem mapMemT (prot k km a l k2 km2: nat):
 def sys_mmap: nat = $ 9 $;
 def MAP_PRIVATE: nat = $ 2 $;
 def MAP_ANONYMOUS: nat = $ 32 $;
-def MAP_FAILED: nat = $ bitsNeg 64 1 $;
-def execMMap (k m k2 m2 ret .len .prot .flags .fd .off .buf .i: nat): wff =
+def execMMap (k m k2 m2 ret .len .prot .flags .fd .off .pad .buf .i: nat): wff =
 $ k e. Config /\ m e. PageMapping (getMemory k) /\
   readReg k RAX = sys_mmap /\ E. len E. prot E. flags E. fd E. off (
     readReg k RDI = 0 /\ len = readReg k RSI /\
     prot = readReg k RDX /\ flags = readReg k 10 /\
-    fd = readReg k 8 /\ off = readReg k 9 /\
-    flags = MAP_PRIVATE + nat (fd = bitsNeg 32 1) * MAP_ANONYMOUS /\
+    fd = readRegSz k wSz32 8 /\ off = readReg k 9 /\
+    MAP_PRIVATE C_ flags /\ flags C_ MAP_PRIVATE + MAP_ANONYMOUS /\
+    (MAP_ANONYMOUS C_ flags -> fd = bitsNeg 32 1) /\
     prot e. Prot /\ off = 0 /\ ret e. u64 /\
-    ifp (isIOError ret) (k2 = k /\ m2 = m /\ ret = MAP_FAILED)
-      (E. buf (buf e. Array u8 len /\ (fd = bitsNeg 32 1 -> all (sn 0) buf) /\
-        A. i (i < len -> m @ (ret +_64 i) = 0) /\
+    ifp (isIOError ret) (k2 = k /\ m2 = m)
+      (E. pad E. buf (buf e. Array u8 (len + pad) /\
+        (MAP_ANONYMOUS C_ flags -> all (sn 0) buf) /\
+        A. i (i < len + pad -> m @ (ret +_64 i) = 0) /\
         mapMem prot k m ret buf k2 m2))) $;
 theorem execMMapT (k m k2 m2 ret: nat):
   $ execMMap k m k2 m2 ret ->
     k e. Config /\ m e. PageMapping (getMemory k) /\
     k2 e. Config /\ m2 e. PageMapping (getMemory k2) /\ ret e. u64 $;
 
-def execIO (ks ks2 .i .o .k .m .ret .k2 .k3 .i2 .o2 .m2: nat): wff =
+--| Perform one IO/syscall step.
+def execIO (ks ks2 .i .o .k .k1 .m .ret .k2 .k3 .i2 .o2 .m2: nat): wff =
 $ E. i E. o E. k E. m E. ret (ks = mkKS i o k m /\ readException k = suc exSysCall /\
-  E. k2 E. k3 (k3 = setException (setReg k2 RAX ret) 0 /\ (
-    execOpen k ret /\ k2 = k /\ ks2 = mkKS i o k3 m \/
-    E. i2 (execRead i k i2 k2 ret /\ ks2 = mkKS i2 o k3 m) \/
-    E. o2 (execWrite o k o2 ret /\ k2 = k /\ ks2 = mkKS i o2 k3 m) \/
-    execFStat k k2 ret /\ ks2 = mkKS i o k3 m \/
-    E. m2 (execMMap k m k2 m2 ret /\ ks2 = mkKS i o k3 m2)))) $;
+  E. k1 E. k2 E. k3 (k1 = setException k 0 /\ k3 = setReg k2 RAX ret /\ (
+    execOpen k1 ret /\ k2 = k1 /\ ks2 = mkKS i o k3 m \/
+    E. i2 (execRead i k1 i2 k2 ret /\ ks2 = mkKS i2 o k3 m) \/
+    E. o2 (execWrite o k1 o2 ret /\ k2 = k1 /\ ks2 = mkKS i o2 k3 m) \/
+    execFStat k1 k2 ret /\ ks2 = mkKS i o k3 m \/
+    E. m2 (execMMap k1 m k2 m2 ret /\ ks2 = mkKS i o k3 m2)))) $;
 theorem execIO_T (ks ks2: nat):
   $ ks e. KernelState /\ execIO ks ks2 -> ks2 e. KernelState $;
+--| A syscall step always leaves the machine in a normal (exception-cleared) state.
+theorem execIOExc0 (ks ks2: nat):
+  $ ks e. KernelState /\ execIO ks ks2 -> readException (ksCfg ks2) = 0 $;
 
 def sys_exit: nat = $ ch x3 xc $;
---| We consider protection faults as a valid way to exit with a nonzero exit code
---| (usually `0xD` or `0xE` but often reported as `0x8D` and `0x8E` by shells).
---| Only the low byte of `RDI` is observable to the parent process (`waitpid`
---| reports `RDI & 0xff`), so that is what counts as the exit code here: a program
---| exiting with `RDI = 256` reports success and must therefore satisfy the
+--| We consider protection faults (`#GP`/`#PF` -> `SIGSEGV`) and undefined
+--| instructions (`ud2`, i.e. `#UD` -> `SIGILL`) as valid ways to exit with a nonzero
+--| exit code: with no signal handler installed (signals are unmodeled) the process is
+--| killed by the signal, which the parent observes as a signal termination
+--| (`WIFSIGNALED`, e.g. `$? = 128 + signo`), never as a clean exit `0`.
+--|
+--| For a real `exit(rdi)`, only the low byte of `RDI` is observable to the parent
+--| (`waitpid` reports `RDI & 0xff`), so that is what counts as the exit code here: a
+--| program exiting with `RDI = 256` reports success and must therefore satisfy the
 --| postcondition.
 def execExit (k ret: nat): wff =
 $ k e. Config /\ ret e. u32 /\ (
-    readException k = suc exGPF /\ ret != 0 \/
+    (readException k = suc exGPF \/ readException k = suc exUD) /\ ret != 0 \/
     readException k = suc exSysCall /\ readReg k RAX = sys_exit /\ ret = chop 8 (readReg k RDI)) $;
 theorem execExitT (k ret: nat):
   $ execExit k ret -> k e. Config /\ ret e. u32 $;
@@ -1618,7 +1629,7 @@ def PT_LOAD: nat = $ 1 $;
 def pHeader (l type prot off vaddr filesz memsz .i: nat): wff =
 $ type e. u32 /\ prot e. Prot /\ off e. u64 /\ vaddr e. u64 /\
   filesz e. u64 /\ memsz e. u64 /\ filesz <= memsz /\
-  E. i (i < 64 /\ 2 ^ i || bitsSub 64 vaddr off /\
+  E. i (12 <= i /\ i < 64 /\ 2 ^ i || bitsSub 64 vaddr off /\
     l = u32Bytes type ++ u32Bytes (protToFlags prot) ++
         u64Bytes off ++ u64Bytes vaddr ++ u64Bytes 0 ++
         u64Bytes filesz ++ u64Bytes memsz ++ u64Bytes (2 ^ i)) $;
@@ -1642,25 +1653,39 @@ theorem BasicElfT (entry prot off seg: nat):
     entry e. u64 /\ prot e. Prot /\ off e. u64 /\ seg e. List u8 $;
 
 --| This defines a basic ELF file (only one program segment, no sections)
---| and extracts the program segment and its protection and location.
-def parseBasicElf (file entry prot vaddr seg: nat)
-  (.off .eh .ph .phoff .fseg .memsz: nat): wff =
+--| and extracts the file-backed part of the program segment (`seg`), the
+--| zero-filled BSS that follows it (`repeat 0 bss`, so the whole loaded image is
+--| `seg ++ repeat 0 bss`, of length `p_memsz`), and its protection and location.
+--|
+--| For a writable segment, `seg` is exactly the `p_filesz` bytes declared in
+--| the program header. For a non-writable segment it may nondeterministically
+--| extend past `p_filesz` (capped at `memsz`) into the bytes the head page of
+--| the BSS really holds: the following file bytes, then zeros past end of
+--| file (the partial page beyond EOF reads as zero). Linux zeroes the head of
+--| the BSS (the part sharing a page with the file data) by user-space writes,
+--| and when the segment is not writable this fails and is silently ignored,
+--| leaving that page content mapped there (`fs/binfmt_elf.c`, `padzero`).
+def parseBasicElf (file entry prot vaddr seg bss: nat)
+  (.off .eh .ph .phoff .filesz .memsz .pad: nat): wff =
 $ file e. List u8 /\
-  E. eh E. ph E. phoff E. off E. fseg E. memsz (
+  E. eh E. ph E. phoff E. off E. filesz E. memsz E. pad (
     sublistAt 0 file eh /\ elfHeader eh entry phoff 0 1 0 /\
     sublistAt phoff file ph /\
-    pHeader ph PT_LOAD prot off vaddr (len fseg) memsz /\
-    sublistAt off file fseg /\
+    pHeader ph PT_LOAD prot off vaddr filesz memsz /\
+    sublistAt off (file ++ repeat 0 pad) seg /\
+    off + filesz <= len file /\
+    filesz <= len seg /\ len seg <= memsz /\
+    (PROT_WRITE C_ prot -> len seg = filesz) /\
     vaddr + memsz e. u64 /\ vaddr <= entry /\ entry < vaddr + memsz /\
-    seg = fseg ++ repeat 0 (memsz - len fseg)) $;
-theorem parseBasicElfT (file entry prot vaddr seg: nat):
-  $ parseBasicElf file entry prot vaddr seg -> file e. List u8 /\
-    basicElf entry prot vaddr seg $;
+    bss = memsz - len seg) $;
+theorem parseBasicElfT (file entry prot vaddr seg bss: nat):
+  $ parseBasicElf file entry prot vaddr seg bss -> file e. List u8 /\
+    basicElf entry prot vaddr (seg ++ repeat 0 bss) $;
 
 --| `isBasicElf elf` means that `elf` is a string that satisfies the
 --| ELF specification.
-def isBasicElf (elf: string) (.entry .prot .off .seg: nat): wff =
-$ E. entry E. prot E. off E. seg parseBasicElf elf entry prot off seg $;
+def isBasicElf (elf: string) (.entry .prot .off .seg .bss: nat): wff =
+$ E. entry E. prot E. off E. seg E. bss parseBasicElf elf entry prot off seg bss $;
 
 def blankConfig (entry k .f .m .r: nat): wff =
 $ E. f E. m (f e. Flags /\ m e. Memory /\
@@ -1686,13 +1711,17 @@ theorem allocStackT (k m k3 km3: nat):
     k3 e. Config /\ km3 e. PageMapping (getMemory k3) $;
 
 --| This defines the initial state set up from a basic ELF file (only one
---| program segment, no sections).
+--| program segment, no sections). The file-backed part of the segment is
+--| mapped at the protection requested in the program header; the BSS is
+--| mapped writable regardless (Linux creates it via `vm_brk_flags`, which
+--| always includes `R+W` on top of the requested protection).
 def initialConfig (elf: string) (ks: nat)
-  (.entry .prot .off .seg .k0 .k1 .km1 .k2 .km2 .a: nat): wff =
-$ E. entry E. prot E. off E. seg E. k0 E. k1 E. km1 E. k2 E. km2 (
-    parseBasicElf elf entry prot off seg /\
+  (.entry .prot .off .seg .bss .k0 .k1 .km1 .k2 .km2 .k3 .km3 .a: nat): wff =
+$ E. entry E. prot E. off E. seg E. bss E. k0 E. k1 E. km1 E. k2 E. km2 E. k3 E. km3 (
+    parseBasicElf elf entry prot off seg bss /\
     blankConfig entry k0 /\ allocStack k0 (\. a e. u64, 0) k1 km1 /\
     mapMem prot k1 km1 off seg k2 km2 /\
-    ks = mkKS 0 0 k2 km2) $;
+    mapMem (bitOr (PROT_READ + PROT_WRITE) prot) k2 km2 (off + len seg) (repeat 0 bss) k3 km3 /\
+    ks = mkKS 0 0 k3 km3) $;
 theorem initialConfigT (elf: string) (ks: nat):
   $ initialConfig elf ks -> ks e. KernelState $;

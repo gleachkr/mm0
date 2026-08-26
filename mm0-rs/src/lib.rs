@@ -35,6 +35,7 @@
   clippy::unwrap_used)]
 // all the clippy lints we don't want
 #![allow(
+  clippy::assert_is_empty,
   clippy::blocks_in_conditions,
   clippy::cognitive_complexity,
   clippy::collapsible_if, // rust-clippy#14825

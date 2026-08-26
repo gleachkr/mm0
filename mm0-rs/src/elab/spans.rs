@@ -181,5 +181,5 @@ impl<T> Spans<T> {
   }
 
   /// Returns an iterator over the collected spans.
-  #[must_use] pub fn iter(&self) -> <&Self as IntoIterator>::IntoIter { self.into_iter() }
+  pub fn iter(&self) -> <&Self as IntoIterator>::IntoIter { self.into_iter() }
 }

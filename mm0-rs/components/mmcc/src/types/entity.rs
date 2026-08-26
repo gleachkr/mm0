@@ -304,9 +304,11 @@ make_prims! {
   }
 
   /// Intrinsic global variables.
+  #[allow(clippy::empty_enums)]
   enum IntrinsicGlobal {}
 
   /// Intrinsic constants.
+  #[allow(clippy::empty_enums)]
   enum IntrinsicConst {}
 
   /// Intrinsic typedefs.
